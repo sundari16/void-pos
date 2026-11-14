@@ -27,6 +27,7 @@ packages = ["src/void_pos"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+extend-exclude = ["migrations"]  # alembic-generated; verified by `alembic check`, not lint
 
 [tool.mypy]
 python_version = "3.11"

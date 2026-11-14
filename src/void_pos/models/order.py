@@ -27,7 +27,7 @@ class Order(Base, TimestampMixin):
     fulfillment: Mapped[str] = mapped_column(String(20), nullable=False)  # pickup|delivery|dine_in
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|sent|paid|voided
 
-    lines: Mapped[list["OrderLine"]] = relationship(
+    lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
     )
 
@@ -53,4 +53,4 @@ class OrderLine(Base, TimestampMixin):
     tax_rate_snapshot: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False, default=0)
     category_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
-    order: Mapped["Order"] = relationship(back_populates="lines")
+    order: Mapped[Order] = relationship(back_populates="lines")

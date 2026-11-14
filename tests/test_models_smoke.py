@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import create_engine, func, select
@@ -132,7 +132,7 @@ def test_order_with_modifier_child_line_and_projections() -> None:
                 seq=1,
                 location_id=loc.id,
                 business_date=TODAY,
-                occurred_at=datetime.now(timezone.utc),
+                occurred_at=datetime.now(UTC),
                 type="order.placed",
                 payload={"order_id": order.id},
             )
@@ -165,14 +165,14 @@ def test_event_seq_is_unique_per_device() -> None:
     with Session(engine) as s:
         seed = _seed(s)
         device, loc = seed["device"], seed["loc"]
-        common = dict(
-            device_id=device.id,
-            location_id=loc.id,
-            business_date=TODAY,
-            occurred_at=datetime.now(timezone.utc),
-            type="noop",
-            payload={},
-        )
+        common = {
+            "device_id": device.id,
+            "location_id": loc.id,
+            "business_date": TODAY,
+            "occurred_at": datetime.now(UTC),
+            "type": "noop",
+            "payload": {},
+        }
         s.add(Event(seq=1, **common))
         s.add(Event(seq=1, **common))
         try:
