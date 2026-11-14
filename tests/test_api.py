@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from void_pos.api.deps import get_printer, get_session
+from void_pos.main import app
+from void_pos.models import Base, Device, Location, MenuItem, Org
+
+# மசாலா தோசை
+TAMIL_DOSA = "மசாலா தୋசை"
+
+
+class CapturePrinter:
+    def __init__(self) -> None:
+        self.sent = bytearray()
+
+    def send(self, data: bytes) -> None:
+        self.sent += data
+
+
+@pytest.fixture
+def client() -> Iterator[tuple[TestClient, dict[str, str], CapturePrinter]]:
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with sessions() as s:
+        org = Org(name="Madras Curry House")
+        s.add(org)
+        s.flush()
+        loc = Location(org_id=org.id, name="Brisbane CBD")
+        s.add(loc)
+        s.flush()
+        device = Device(
+            location_id=loc.id, name="Till 1", order_number_start=1000, order_number_end=1999
+        )
+        item = MenuItem(
+            location_id=loc.id, name="Masala Dosa", kitchen_name=TAMIL_DOSA, base_price_cents=1850
+        )
+        s.add_all([device, item])
+        s.flush()
+        s.commit()
+        ids = {"loc": loc.id, "device": device.id, "item": item.id}
+
+    printer = CapturePrinter()
+
+    def _session() -> Iterator[Session]:
+        with sessions() as s:
+            yield s
+
+    app.dependency_overrides[get_session] = _session
+    app.dependency_overrides[get_printer] = lambda: printer
+    try:
+        yield TestClient(app), ids, printer
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_place_then_send_to_kitchen(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
+    c, ids, printer = client
+    r = c.post(
+        "/orders",
+        json={
+            "device_id": ids["device"],
+            "location_id": ids["loc"],
+            "order_number": 1000,
+            "channel": "web",
+            "fulfillment": "pickup",
+            "lines": [
+                {
+                    "ref": "a",
+                    "menu_item_id": ids["item"],
+                    "quantity": 2,
+                    "name_snapshot": "Masala Dosa",
+                    "kitchen_name_snapshot": TAMIL_DOSA,
+                    "unit_price_cents": 1850,
+                },
+                {
+                    "ref": "b",
+                    "parent_ref": "a",
+                    "quantity": 1,
+                    "name_snapshot": "Extra hot",
+                    "unit_price_cents": 0,
+                },
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["state"] == "open"
+    order_id = body["id"]
+
+    r2 = c.post(f"/orders/{order_id}/send-to-kitchen")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["state"] == "sent"
+    assert r2.json()["ticket_bytes"] > 0
+    assert b"ORDER #1000" in printer.sent
+
+
+def test_place_order_unknown_device_is_404(
+    client: tuple[TestClient, dict[str, str], CapturePrinter],
+) -> None:
+    c, ids, _ = client
+    r = c.post(
+        "/orders",
+        json={
+            "device_id": "00000000000000000000000000",
+            "location_id": ids["loc"],
+            "order_number": 1,
+            "channel": "web",
+            "fulfillment": "pickup",
+            "lines": [
+                {
+                    "ref": "a",
+                    "menu_item_id": ids["item"],
+                    "quantity": 1,
+                    "name_snapshot": "X",
+                    "unit_price_cents": 100,
+                }
+            ],
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_health(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
+    c, _, _ = client
+    assert c.get("/health").json() == {"status": "ok"}

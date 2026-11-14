@@ -8,5 +8,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://localhost/void_pos"
 
+    # Kitchen printing (optional; unset = orders project but nothing prints).
+    kitchen_printer_host: str | None = None
+    kitchen_printer_port: int = 9100
+    kitchen_font_path: str | None = None  # a font with the glyphs for non-Latin tickets
+
 
 settings = Settings()

@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from ..events import ingest_event
+from ..ids import new_ulid
+from ..models import Device, Order
+from ..printing import Printer, Rasterizer, print_order
+from .deps import get_printer, get_rasterizer, get_session
+from .schemas import KitchenResponse, OrderResponse, PlaceOrderRequest
+
+router = APIRouter()
+
+SessionDep = Annotated[Session, Depends(get_session)]
+PrinterDep = Annotated[Printer, Depends(get_printer)]
+RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
+
+
+@router.post("/orders", response_model=OrderResponse)
+def place_order(req: PlaceOrderRequest, session: SessionDep) -> OrderResponse:
+    device = session.get(Device, req.device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="device not found")
+
+    order_id = new_ulid()
+    ref_to_id = {line.ref: new_ulid() for line in req.lines}
+    payload_lines = [
+        {
+            "id": ref_to_id[line.ref],
+            "parent_line_id": ref_to_id.get(line.parent_ref) if line.parent_ref else None,
+            "menu_item_id": line.menu_item_id,
+            "modifier_id": line.modifier_id,
+            "quantity": line.quantity,
+            "name_snapshot": line.name_snapshot,
+            "kitchen_name_snapshot": line.kitchen_name_snapshot,
+            "unit_price_cents": line.unit_price_cents,
+            "tax_rate_snapshot": line.tax_rate_snapshot,
+            "category_snapshot": line.category_snapshot,
+        }
+        for line in req.lines
+    ]
+    ingest_event(
+        session,
+        {
+            "event_id": new_ulid(),
+            "device_id": device.id,
+            "seq": device.last_seq + 1,
+            "location_id": req.location_id,
+            "business_date": req.business_date or datetime.now(UTC).date(),
+            "occurred_at": datetime.now(UTC),
+            "type": "order.placed",
+            "payload": {
+                "order_id": order_id,
+                "order_number": req.order_number,
+                "customer_id": req.customer_id,
+                "channel": req.channel,
+                "fulfillment": req.fulfillment,
+                "lines": payload_lines,
+            },
+        },
+    )
+    session.commit()
+    order = session.get(Order, order_id)
+    return OrderResponse(id=order.id, order_number=order.order_number, state=order.state)
+
+
+@router.post("/orders/{order_id}/send-to-kitchen", response_model=KitchenResponse)
+def send_to_kitchen(
+    order_id: str,
+    session: SessionDep,
+    printer: PrinterDep,
+    rasterizer: RasterizerDep,
+) -> KitchenResponse:
+    order = session.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="order not found")
+
+    device = session.get(Device, order.device_id)
+    ingest_event(
+        session,
+        {
+            "event_id": new_ulid(),
+            "device_id": order.device_id,
+            "seq": (device.last_seq + 1) if device is not None else 1,
+            "location_id": order.location_id,
+            "business_date": order.business_date,
+            "occurred_at": datetime.now(UTC),
+            "type": "order.sent",
+            "payload": {"order_id": order_id},
+        },
+    )
+    data = print_order(session, order_id, printer, rasterizer)
+    session.commit()
+    session.refresh(order)
+    return KitchenResponse(order_id=order_id, state=order.state, ticket_bytes=len(data))
