@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from void_pos.api.deps import get_printer, get_session
+from void_pos.ids import new_ulid
 from void_pos.main import app
 from void_pos.models import Base, Device, Location, MenuItem, Org
 
@@ -165,3 +166,40 @@ def test_pay_order_via_api(client: tuple[TestClient, dict[str, str], CapturePrin
     assert body["provider"] == "cash"
     assert body["amount_cents"] == 3700
     assert body["order_state"] == "paid"
+
+
+def test_sync_push_and_pull_via_api(
+    client: tuple[TestClient, dict[str, str], CapturePrinter],
+) -> None:
+    c, ids, _ = client
+    event = {
+        "event_id": new_ulid(),
+        "device_id": ids["device"],
+        "seq": 1,
+        "location_id": ids["loc"],
+        "business_date": "2026-11-15",
+        "occurred_at": "2026-11-15T10:00:00+00:00",
+        "type": "order.placed",
+        "payload": {
+            "order_id": new_ulid(),
+            "order_number": 1000,
+            "channel": "pos",
+            "fulfillment": "pickup",
+            "lines": [
+                {
+                    "id": new_ulid(),
+                    "menu_item_id": ids["item"],
+                    "quantity": 1,
+                    "name_snapshot": "Masala Dosa",
+                    "unit_price_cents": 1850,
+                }
+            ],
+        },
+    }
+    push = c.post("/sync/push", json={"events": [event]})
+    assert push.status_code == 200, push.text
+    assert push.json()["acks"][0]["status"] == "applied"
+
+    pull = c.get("/sync/pull", params={"limit": 50})
+    assert pull.status_code == 200, pull.text
+    assert event["event_id"] in [e["event_id"] for e in pull.json()["events"]]

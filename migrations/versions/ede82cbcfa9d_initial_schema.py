@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: f3474e698ac9
+Revision ID: ede82cbcfa9d
 Revises: 
-Create Date: 2026-11-14 13:22:52.651280
+Create Date: 2026-11-15 13:27:31.396126
 
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'f3474e698ac9'
+revision: str = 'ede82cbcfa9d'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -111,6 +111,7 @@ def upgrade() -> None:
     sa.Column('occurred_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('type', sa.String(length=80), nullable=False),
     sa.Column('payload', sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), 'postgresql'), nullable=False),
+    sa.Column('received_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['device_id'], ['device.id'], ),
     sa.ForeignKeyConstraint(['location_id'], ['location.id'], ),
     sa.PrimaryKeyConstraint('event_id'),
@@ -119,6 +120,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_event_business_date'), 'event', ['business_date'], unique=False)
     op.create_index(op.f('ix_event_device_id'), 'event', ['device_id'], unique=False)
     op.create_index(op.f('ix_event_location_id'), 'event', ['location_id'], unique=False)
+    op.create_index(op.f('ix_event_received_at'), 'event', ['received_at'], unique=False)
     op.create_table('menu_item_modifier_group',
     sa.Column('menu_item_id', sa.String(length=26), nullable=False),
     sa.Column('modifier_group_id', sa.String(length=26), nullable=False),
@@ -239,6 +241,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_modifier_group_id'), table_name='modifier')
     op.drop_table('modifier')
     op.drop_table('menu_item_modifier_group')
+    op.drop_index(op.f('ix_event_received_at'), table_name='event')
     op.drop_index(op.f('ix_event_location_id'), table_name='event')
     op.drop_index(op.f('ix_event_device_id'), table_name='event')
     op.drop_index(op.f('ix_event_business_date'), table_name='event')

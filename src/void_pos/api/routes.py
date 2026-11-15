@@ -11,6 +11,7 @@ from ..ids import new_ulid
 from ..models import Device, Order
 from ..payments import CashProvider, ExternalProvider, pay_order
 from ..printing import Printer, Rasterizer, print_order
+from ..sync import pull_events, push_events
 from .deps import get_printer, get_rasterizer, get_session
 from .schemas import (
     KitchenResponse,
@@ -18,6 +19,9 @@ from .schemas import (
     PaymentResponse,
     PayRequest,
     PlaceOrderRequest,
+    PullResponse,
+    PushRequest,
+    PushResponse,
 )
 
 router = APIRouter()
@@ -135,4 +139,24 @@ def pay(order_id: str, body: PayRequest, session: SessionDep) -> PaymentResponse
         amount_cents=payment.amount_cents,
         status=payment.status,
         order_state=order.state,
+    )
+
+
+@router.post("/sync/push", response_model=PushResponse)
+def sync_push(req: PushRequest, session: SessionDep) -> PushResponse:
+    result = push_events(session, [event.model_dump() for event in req.events])
+    session.commit()
+    return PushResponse(acks=result.acks, cursor=result.cursor)
+
+
+@router.get("/sync/pull", response_model=PullResponse)
+def sync_pull(
+    session: SessionDep,
+    cursor: str | None = None,
+    limit: int = 100,
+    device_id: str | None = None,
+) -> PullResponse:
+    result = pull_events(session, cursor, limit=limit, exclude_device_id=device_id)
+    return PullResponse(
+        events=result.events, next_cursor=result.next_cursor, has_more=result.has_more
     )

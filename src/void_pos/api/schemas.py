@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LineIn(BaseModel):
@@ -58,3 +59,34 @@ class PaymentResponse(BaseModel):
     amount_cents: int
     status: str
     order_state: str
+
+
+class EventIn(BaseModel):
+    event_id: str
+    device_id: str
+    seq: int
+    location_id: str
+    business_date: date
+    occurred_at: datetime
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class PushRequest(BaseModel):
+    events: list[EventIn]
+
+
+class Ack(BaseModel):
+    event_id: str
+    status: str
+
+
+class PushResponse(BaseModel):
+    acks: list[Ack]
+    cursor: str | None = None
+
+
+class PullResponse(BaseModel):
+    events: list[dict[str, Any]]
+    next_cursor: str | None = None
+    has_more: bool
