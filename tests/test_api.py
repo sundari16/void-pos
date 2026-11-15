@@ -236,3 +236,36 @@ def test_export_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter
     assert csv_resp.status_code == 200
     assert csv_resp.headers["content-type"].startswith("text/csv")
     assert "order_number" in csv_resp.text
+
+
+def test_closeout_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
+    c, ids, _ = client
+    placed = c.post(
+        "/orders",
+        json={
+            "device_id": ids["device"],
+            "location_id": ids["loc"],
+            "order_number": 1000,
+            "channel": "web",
+            "fulfillment": "pickup",
+            "business_date": "2026-11-15",
+            "lines": [
+                {
+                    "ref": "a",
+                    "menu_item_id": ids["item"],
+                    "quantity": 2,
+                    "name_snapshot": "Masala Dosa",
+                    "unit_price_cents": 1850,
+                }
+            ],
+        },
+    )
+    order_id = placed.json()["id"]
+    c.post(f"/orders/{order_id}/pay", json={"method": "cash"})
+
+    report = c.get(f"/reports/{ids['loc']}/closeout", params={"business_date": "2026-11-15"})
+    assert report.status_code == 200, report.text
+    body = report.json()
+    assert body["gross_sales_cents"] == 3700
+    assert body["payments_by_provider"]["cash"] == 3700
+    assert body["orders"]["paid"] == 1

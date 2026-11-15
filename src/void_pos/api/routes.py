@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -12,6 +12,7 @@ from ..ids import new_ulid
 from ..models import Device, Order
 from ..payments import CashProvider, ExternalProvider, pay_order
 from ..printing import Printer, Rasterizer, print_order
+from ..reporting import shift_closeout
 from ..sync import pull_events, push_events
 from .deps import get_printer, get_rasterizer, get_session
 from .schemas import (
@@ -186,3 +187,14 @@ def export_entity_csv(location_id: str, entity: str, session: SessionDep) -> Res
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{entity}.csv"'},
     )
+
+
+@router.get("/reports/{location_id}/closeout")
+def closeout(
+    location_id: str, session: SessionDep, business_date: date | None = None
+) -> dict[str, Any]:
+    day = business_date or datetime.now(UTC).date()
+    try:
+        return shift_closeout(session, location_id, day)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="location not found") from exc
