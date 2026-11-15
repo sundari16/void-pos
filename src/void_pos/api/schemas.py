@@ -42,3 +42,19 @@ class KitchenResponse(BaseModel):
     order_id: str
     state: str
     ticket_bytes: int
+
+
+class PayRequest(BaseModel):
+    method: str = "cash"  # cash | external (Stripe plugs in as a commercial method)
+    external_ref: str | None = None
+    amount_cents: int | None = None  # defaults to the order total
+    currency: str = "AUD"
+
+
+class PaymentResponse(BaseModel):
+    order_id: str
+    payment_id: str
+    provider: str
+    amount_cents: int
+    status: str
+    order_state: str

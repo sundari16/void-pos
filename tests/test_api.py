@@ -134,3 +134,34 @@ def test_place_order_unknown_device_is_404(
 def test_health(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
     c, _, _ = client
     assert c.get("/health").json() == {"status": "ok"}
+
+
+def test_pay_order_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
+    c, ids, _ = client
+    placed = c.post(
+        "/orders",
+        json={
+            "device_id": ids["device"],
+            "location_id": ids["loc"],
+            "order_number": 1000,
+            "channel": "web",
+            "fulfillment": "pickup",
+            "lines": [
+                {
+                    "ref": "a",
+                    "menu_item_id": ids["item"],
+                    "quantity": 2,
+                    "name_snapshot": "Masala Dosa",
+                    "unit_price_cents": 1850,
+                }
+            ],
+        },
+    )
+    order_id = placed.json()["id"]
+
+    paid = c.post(f"/orders/{order_id}/pay", json={"method": "cash"})
+    assert paid.status_code == 200, paid.text
+    body = paid.json()
+    assert body["provider"] == "cash"
+    assert body["amount_cents"] == 3700
+    assert body["order_state"] == "paid"

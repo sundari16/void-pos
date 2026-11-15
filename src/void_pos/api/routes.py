@@ -9,9 +9,16 @@ from sqlalchemy.orm import Session
 from ..events import ingest_event
 from ..ids import new_ulid
 from ..models import Device, Order
+from ..payments import CashProvider, ExternalProvider, pay_order
 from ..printing import Printer, Rasterizer, print_order
 from .deps import get_printer, get_rasterizer, get_session
-from .schemas import KitchenResponse, OrderResponse, PlaceOrderRequest
+from .schemas import (
+    KitchenResponse,
+    OrderResponse,
+    PaymentResponse,
+    PayRequest,
+    PlaceOrderRequest,
+)
 
 router = APIRouter()
 
@@ -97,3 +104,35 @@ def send_to_kitchen(
     session.commit()
     session.refresh(order)
     return KitchenResponse(order_id=order_id, state=order.state, ticket_bytes=len(data))
+
+
+@router.post("/orders/{order_id}/pay", response_model=PaymentResponse)
+def pay(order_id: str, body: PayRequest, session: SessionDep) -> PaymentResponse:
+    if body.method == "cash":
+        provider = CashProvider()
+    elif body.method == "external":
+        if not body.external_ref:
+            raise HTTPException(
+                status_code=422, detail="external_ref required for method 'external'"
+            )
+        provider = ExternalProvider(external_ref=body.external_ref)
+    else:
+        raise HTTPException(status_code=422, detail=f"unknown payment method {body.method!r}")
+
+    try:
+        payment = pay_order(
+            session, order_id, provider, amount_cents=body.amount_cents, currency=body.currency
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="order not found") from exc
+
+    session.commit()
+    order = session.get(Order, order_id)
+    return PaymentResponse(
+        order_id=order_id,
+        payment_id=payment.id,
+        provider=payment.provider,
+        amount_cents=payment.amount_cents,
+        status=payment.status,
+        order_state=order.state,
+    )
