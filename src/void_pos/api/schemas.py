@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LineIn(BaseModel):
@@ -90,3 +90,66 @@ class PullResponse(BaseModel):
     events: list[dict[str, Any]]
     next_cursor: str | None = None
     has_more: bool
+
+
+class MenuItemIn(BaseModel):
+    name: str
+    base_price_cents: int
+    kitchen_name: str | None = None
+    category: str | None = None
+    tax_rate: float = 0
+    is_available: bool = True
+
+
+class MenuItemUpdate(BaseModel):
+    name: str | None = None
+    base_price_cents: int | None = None
+    kitchen_name: str | None = None
+    category: str | None = None
+    tax_rate: float | None = None
+    is_available: bool | None = None
+
+
+class MenuItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    location_id: str
+    name: str
+    kitchen_name: str | None
+    category: str | None
+    base_price_cents: int
+    tax_rate: float
+    is_available: bool
+
+
+class ModifierGroupIn(BaseModel):
+    name: str
+    min_select: int = 0
+    max_select: int | None = None
+
+
+class ModifierGroupOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    location_id: str
+    name: str
+    min_select: int
+    max_select: int | None
+
+
+class ModifierIn(BaseModel):
+    name: str
+    price_delta_cents: int = 0
+    kitchen_name: str | None = None
+
+
+class ModifierOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    group_id: str
+    name: str
+    kitchen_name: str | None
+    price_delta_cents: int

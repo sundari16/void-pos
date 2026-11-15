@@ -269,3 +269,23 @@ def test_closeout_via_api(client: tuple[TestClient, dict[str, str], CapturePrint
     assert body["gross_sales_cents"] == 3700
     assert body["payments_by_provider"]["cash"] == 3700
     assert body["orders"]["paid"] == 1
+
+
+def test_menu_crud_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
+    c, ids, _ = client
+    created = c.post(
+        f"/locations/{ids['loc']}/menu/items",
+        json={"name": "Chai", "base_price_cents": 400, "category": "Drinks"},
+    )
+    assert created.status_code == 201, created.text
+    item_id = created.json()["id"]
+
+    listed = c.get(f"/locations/{ids['loc']}/menu/items")
+    assert any(i["id"] == item_id for i in listed.json())
+
+    patched = c.patch(f"/menu/items/{item_id}", json={"base_price_cents": 450})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["base_price_cents"] == 450
+
+    assert c.delete(f"/menu/items/{item_id}").status_code == 204
+    assert c.get(f"/menu/items/{item_id}").status_code == 404
