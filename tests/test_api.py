@@ -203,3 +203,36 @@ def test_sync_push_and_pull_via_api(
     pull = c.get("/sync/pull", params={"limit": 50})
     assert pull.status_code == 200, pull.text
     assert event["event_id"] in [e["event_id"] for e in pull.json()["events"]]
+
+
+def test_export_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
+    c, ids, _ = client
+    c.post(
+        "/orders",
+        json={
+            "device_id": ids["device"],
+            "location_id": ids["loc"],
+            "order_number": 1000,
+            "channel": "web",
+            "fulfillment": "pickup",
+            "lines": [
+                {
+                    "ref": "a",
+                    "menu_item_id": ids["item"],
+                    "quantity": 1,
+                    "name_snapshot": "Masala Dosa",
+                    "unit_price_cents": 1850,
+                }
+            ],
+        },
+    )
+
+    bundle = c.get(f"/export/{ids['loc']}")
+    assert bundle.status_code == 200, bundle.text
+    assert bundle.json()["location"]["id"] == ids["loc"]
+    assert len(bundle.json()["orders"]) == 1
+
+    csv_resp = c.get(f"/export/{ids['loc']}/csv/orders")
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-type"].startswith("text/csv")
+    assert "order_number" in csv_resp.text

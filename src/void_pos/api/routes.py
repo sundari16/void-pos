@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from ..events import ingest_event
+from ..export import CSV_ENTITIES, export_csv, export_location
 from ..ids import new_ulid
 from ..models import Device, Order
 from ..payments import CashProvider, ExternalProvider, pay_order
@@ -159,4 +160,29 @@ def sync_pull(
     result = pull_events(session, cursor, limit=limit, exclude_device_id=device_id)
     return PullResponse(
         events=result.events, next_cursor=result.next_cursor, has_more=result.has_more
+    )
+
+
+@router.get("/export/{location_id}")
+def export_data(location_id: str, session: SessionDep) -> dict[str, Any]:
+    try:
+        return export_location(session, location_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="location not found") from exc
+
+
+@router.get("/export/{location_id}/csv/{entity}")
+def export_entity_csv(location_id: str, entity: str, session: SessionDep) -> Response:
+    try:
+        csv_text = export_csv(session, location_id, entity)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="location not found") from exc
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"unknown entity {entity!r}; one of {list(CSV_ENTITIES)}"
+        ) from exc
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{entity}.csv"'},
     )
