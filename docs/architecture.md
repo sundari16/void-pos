@@ -51,8 +51,8 @@ The event log is the source of truth; `pos_order`, `order_line`, `payment` and
 `loyalty_ledger` are projections of it. Two paths write events, and both go through
 `ingest_event`:
 
-1. **Online commands** from a paired till: `POST /orders`, `/orders/{id}/send-to-kitchen`,
-   `/orders/{id}/void`, `/orders/{id}/pay`.
+1. **Online commands** from a paired till: `POST /orders`, `/orders/{id}/lines` (add
+   items), `/orders/{id}/send-to-kitchen`, `/orders/{id}/void`, `/orders/{id}/pay`.
 2. **Sync**: a till pushes a batch of events it recorded (`POST /sync/push`) and pulls the
    rest of its location's events by cursor (`GET /sync/pull`). The cursor is a
    per-location `sync_seq` handed out after commit, under the location's counter lock, so
@@ -108,22 +108,60 @@ that ends before it starts runs past midnight, and an open end is unbounded. The
 everything in one call, `GET /locations/{id}/menu`: live items with their group ids, every
 group with its modifiers, and what is on sale now.
 
+### Tables, adding items and the kitchen
+
+A dine-in order can carry a `table_label`. `GET /locations/{id}/orders` lists the
+location's unsettled orders (open or sent, any date) with totals, GST, what's owing and
+how many lines the kitchen hasn't had, so a till can pick a table back up; every order
+response carries the lines and payments.
+
+`POST /orders/{id}/lines` records `order.lines_added`: new item lines with their
+modifiers, checked against the menu like a new order. A paid order is closed (start a new
+one); a part-paid one takes more and its balance grows. Each line remembers when the
+kitchen got it, projected from `order.sent`, which lists the lines it sent (`line_ids`;
+an older till's send without them covers every line not yet sent). So **Send to kitchen**
+prints the whole order the first time, then an ADDED ticket with only the new items, or a
+REPRINT when there's nothing new.
+
 ### Voids and payments
 
 `POST /orders/{id}/void` needs a reason. It is refused once any payment is captured
 (refund first) or if the order is already voided. If the kitchen has the order, a VOID
 ticket prints first, so a printer that's down records nothing and the till retries.
+Once the location has an active manager, a void needs a manager's PIN, and the event
+records who approved it.
 
 An order can be paid in parts. Each payment takes some or all of the balance (default: all
 of it), never more, and the order turns paid once captured payments cover the total. The
 projection applies the same rule to synced payments, so a split bill settles the same way
 online or offline. Order and payment responses carry `balance_cents`.
 
+### GST and receipts
+
+Menu prices include GST. A line at rate *r* carries *r* / (1 + *r*) of its price as GST;
+amounts are summed per rate and rounded once per rate, per order (`totals.gst_cents`), so
+each receipt and the closeout agree. The closeout reports paid sales, the GST in them,
+sales ex GST and what's still owing on the day's open orders.
+
+`GET /orders/{id}/receipt` builds the customer receipt (`receipts/`). With an ABN on the
+location it is an Australian tax invoice: the seller's name and ABN, the date, each item
+with quantity and amount, the GST included and the words "Tax invoice"; without one it is a
+plain receipt. `POST /orders/{id}/print-receipt` prints it on the receipt printer, if one
+is configured; otherwise the till shows it to print from the tablet. Printing a receipt
+records nothing.
+
 ## Who may do what
 
 Every request except `/health*` and `/devices/pair` carries `Authorization: Bearer <token>`.
 Pairing counts wrong codes: 10 from one client or 50 overall in 10 minutes, and it answers
 429 `too_many_attempts` with `Retry-After` until the oldest ages out (`api/ratelimit.py`).
+
+**Staff and manager approval.** Staff have a role (staff or manager) and a 4-8 digit PIN,
+unique at the location and stored as a salted scrypt hash. Once a location has an active
+manager, voiding an order or switching a dish off from a till needs a manager's PIN in the
+request; the void event or the menu change records who approved it. Wrong PINs are counted
+per till (5 in 5 minutes, then 429). A location with no manager needs no PIN, so add one
+before going live.
 
 - **Venue admin**: `VOIDPOS_ADMIN_TOKEN` (24+ characters, compared in constant time).
   Creates locations and tills, issues pairing codes, revokes tills, edits the menu, exports.
@@ -135,9 +173,10 @@ Pairing counts wrong codes: 10 from one client or 50 overall in 10 minutes, and 
 
 | | Till | Admin |
 |---|---|---|
-| Orders, kitchen, void, pay, sync | yes | no (`till_only`) |
-| Read menu, order, closeout | own location | any |
-| Edit menu (one item or a bulk edit, all or nothing), export, `/admin/*` | no (`admin_only`) | yes |
+| Orders, add items, kitchen, void, pay, sync | yes | no (`till_only`) |
+| Read menu, orders, receipts, closeout; print a receipt | own location | any |
+| Switch a dish off or on | with a manager's PIN | yes |
+| Edit menu (one item or a bulk edit, all or nothing), export, staff, venue details, `/admin/*` | no (`admin_only`) | yes |
 
 ## Errors
 
@@ -151,12 +190,12 @@ anything unexpected is a logged 500 `internal_error`.
 |---|---|
 | 401 | `missing_token`, `invalid_token`, `invalid_pairing_code`, `pairing_code_expired`, `device_revoked` |
 | 402 | `payment_failed` |
-| 403 | `till_only`, `admin_only`, `admin_disabled`, `wrong_location`, `foreign_event` |
+| 403 | `till_only`, `admin_only`, `admin_disabled`, `wrong_location`, `foreign_event`, `manager_pin_required`, `wrong_pin` |
 | 404 | `not_found`, `unknown_entity` |
-| 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `order_paid`, `payment_exists`, `range_overlap`, `device_revoked`, `item_unavailable`, `modifier_unavailable`, `changed_since`, `already_reverted`, `in_use`, `group_missing` |
-| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch` |
+| 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `order_paid`, `payment_exists`, `range_overlap`, `device_revoked`, `item_unavailable`, `modifier_unavailable`, `changed_since`, `already_reverted`, `in_use`, `group_missing`, `line_exists`, `pin_taken` |
+| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn` |
 | 429 | `too_many_attempts` |
-| 503 | `printer_unavailable`, `database_unavailable` |
+| 503 | `printer_unavailable`, `no_receipt_printer`, `database_unavailable` |
 
 The web till keeps a command's body until the server answers: a network error or 5xx keeps
 the ids for a safe retry (and freezes the ticket, so the retry is the same order), a 4xx
@@ -188,4 +227,6 @@ not the previous UTC day's.
 - **Hosting.** GCP is deferred until the project is commercial. Moving there means a
   print agent on a venue device (the cloud can't reach a LAN printer) and per-org limits
   on top of the location scoping that already exists.
-- Refunds, and amending a placed order (today: void it and ring it up again).
+- Refunds; changing or removing items already on a placed order (today: void and ring
+  it up again); order discounts, surcharges and tips; cash drawer counts; routing items
+  to more than one kitchen printer.

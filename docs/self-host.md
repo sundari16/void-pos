@@ -106,6 +106,31 @@ Every menu edit is recorded: `GET /locations/{id}/menu/changes` lists them newes
 modifier (a deleted item comes back with its modifier groups). An undo is recorded too, so
 it can be undone in turn.
 
+## Staff and receipts
+
+Add each manager (and other staff) with a PIN of 4 to 8 digits. The command asks for the
+PIN, so it never lands in the shell history:
+
+```bash
+docker compose exec api void-pos add-staff --location <location id> --name "Asha" --role manager
+docker compose exec api void-pos list-staff --location <location id>
+```
+
+Once a manager exists, voiding an order and marking a dish sold out on a till need a
+manager's PIN. `deactivate-staff --staff <id>` stops someone's PIN working.
+
+Customer receipts show the venue's details. With an ABN they are tax invoices:
+
+```bash
+docker compose exec api void-pos venue-details --location <location id> \
+  --business-name "Madras Curry House" --abn "12 345 678 901" \
+  --address "1 Example St, Brisbane QLD 4000" --phone "07 0000 0000" --footer "Nandri!"
+```
+
+A thermal receipt printer at the counter is optional. Set `VOIDPOS_RECEIPT_PRINTER_HOST`
+(and `VOIDPOS_RECEIPT_PRINTER_COLUMNS=32` for 58 mm paper) in `.env`; without one, the
+till's **Receipt** button shows the receipt to print from the tablet.
+
 ## Kitchen printer
 
 Network ESC/POS printers listen on port 9100. Set its address in `.env` and restart:
@@ -128,7 +153,8 @@ It sends a short ticket with a Tamil line. If it says the printer can't be reach
 address and that port 9100 is open; if the Tamil line prints as garbage, set the font below.
 
 If the printer is off or unreachable, **Send to kitchen** says so and leaves the order open;
-tapping again once the printer is back prints it once.
+tapping again once the printer is back prints it once. Items added to an order later print
+on an ADDED ticket with just those items, and the table number when there is one.
 
 Tickets in a non-Latin script (Tamil, Thai, Chinese) are printed as images. Put a font with
 those glyphs in `./fonts` (for example `NotoSansTamil-Regular.ttf` from Google Fonts) and set
@@ -145,18 +171,23 @@ Run through this the day before the first service (the Madras Curry House pilot 
 3. **Venue:** `create-location`, then `import-menu` with the real menu and
    `import-modifiers` with its modifier groups (dry runs first), and a look over the result
    in the till: required choices (spice level) block **Add** until picked.
-4. **Printer:** `print-test` prints, including the Tamil line.
-5. **Tills:** `add-device` once per tablet, each with its own order-number range; pair each
+4. **Printer:** `print-test` prints, including the Tamil line. If there's a receipt
+   printer, a test receipt prints from the till's **Receipt** button.
+5. **Staff and venue:** `add-staff` for each manager (their PINs approve voids and
+   sold-out), and `venue-details` with the ABN so receipts are tax invoices.
+6. **Tills:** `add-device` once per tablet, each with its own order-number range; pair each
    tablet at `http://<venue machine>:3000`.
-6. **Dry run of a service:** on each till, place an order, send it to the kitchen, take a cash
-   payment, then another paid by **Card on terminal** (take the card on the venue's own
-   terminal as usual and type its receipt or approval number into the till), and check the
-   closeout shows cash and card separately. Split one bill two ways (**Split 2**, one share
-   cash, one card), and void one order after sending it to the kitchen: a VOID ticket
-   prints, and the closeout counts it as voided.
-7. **Backups:** a dump appears in `./backups`; copy it off the machine and set a habit (or a
+7. **Dry run of a service:** on each till, place a dine-in order with a table number, send
+   it to the kitchen, start another order, then find the table in **Open orders**, add a
+   dessert and send just that (an ADDED ticket prints). Take a cash payment, then another
+   paid by **Card on terminal** (take the card on the venue's own terminal as usual and
+   type its receipt or approval number into the till). Split one bill two ways (**Split
+   2**, one share cash, one card), print or show a receipt, mark a dish sold out and back on
+   with a manager's PIN, and void one sent order with the PIN: a VOID ticket prints. The
+   closeout should show cash and card separately, the GST, and the voided order.
+8. **Backups:** a dump appears in `./backups`; copy it off the machine and set a habit (or a
    synced folder) for copying the nightly ones.
-8. **Fallback:** keep the venue's previous way of taking orders to hand for the first services.
+9. **Fallback:** keep the venue's previous way of taking orders to hand for the first services.
 
 ## Backups
 
@@ -200,5 +231,7 @@ The API applies any new migrations on start. Take a backup first
 | "Kitchen printer isn't answering" | the printer is on, its address matches `VOIDPOS_KITCHEN_PRINTER_HOST`, port 9100 is open |
 | Till asks to pair again | it was revoked or re-paired elsewhere; issue a new code |
 | "Too many wrong pairing codes" | wait the minutes it says (ten wrong codes in ten minutes pause pairing), then enter a fresh code carefully |
+| "A manager's PIN is needed" | a manager types their PIN in the prompt; add a manager with `add-staff` if there's none |
+| "No receipt printer is set up" | use **Print from this device**, or set `VOIDPOS_RECEIPT_PRINTER_HOST` |
 | An item is greyed out on the till | it's switched off, or outside its daily window (shown on the button); the till refreshes the menu every few minutes |
 | `api` keeps restarting | `docker compose logs api`; usually `.env` values (admin token under 24 characters, wrong password) |
