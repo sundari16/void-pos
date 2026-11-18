@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { config, isConfigured } from "@/lib/config";
+import { friendlyError, runCommand, type Pending } from "@/lib/commands";
 import { formatCents } from "@/lib/money";
-import { advanceOrderNumber, peekOrderNumber } from "@/lib/orderNumber";
 import {
   draftItemFrom,
   orderLineCount,
@@ -13,11 +12,21 @@ import {
   type DraftItem,
 } from "@/lib/order";
 import type { QuickModifier } from "@/lib/modifiers";
-import type { KitchenResponse, MenuItem, OrderResponse, PaymentResponse } from "@/lib/types";
-import { ConfigNotice } from "@/components/ConfigNotice";
+import type {
+  CommandIn,
+  KitchenResponse,
+  MenuItem,
+  OrderResponse,
+  PaymentResponse,
+  PayRequest,
+  PlaceOrderRequest,
+} from "@/lib/types";
+import { ulid } from "@/lib/ulid";
 import { ItemDialog } from "@/components/ItemDialog";
 import { MenuGrid } from "@/components/MenuGrid";
 import { OrderTicket } from "@/components/OrderTicket";
+import { PairTill } from "@/components/PairTill";
+import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
 const FULFILLMENTS = ["dine_in", "pickup", "delivery"] as const;
 
@@ -28,12 +37,9 @@ interface Placed {
   payment?: PaymentResponse;
 }
 
-function errMsg(err: unknown): string {
-  if (err instanceof ApiError) return err.detail;
-  return err instanceof Error ? err.message : String(err);
-}
-
 export default function PosPage() {
+  const { till, ready, command, orderNumber, seqAfter, unpair } = useTill();
+
   const [items, setItems] = useState<MenuItem[]>([]);
   const [menuError, setMenuError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,26 +51,52 @@ export default function PosPage() {
   const [placed, setPlaced] = useState<Placed | null>(null);
   const [busy, setBusy] = useState<null | "place" | "kitchen" | "pay">(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [nextNumber, setNextNumber] = useState<number>(config.orderNumberStart);
 
-  const configured = isConfigured();
+  // A command's body (and so its ids) lives here until the server answers, so tapping
+  // again after a dropped connection resends the same ids and can't duplicate anything.
+  const pendingPlace = useRef<PlaceOrderRequest | null>(null);
+  const pendingKitchen = useRef<CommandIn | null>(null);
+  const pendingPay = useRef<PayRequest | null>(null);
 
+  // A changed draft is a different order: never replay an earlier attempt for it.
   useEffect(() => {
-    setNextNumber(peekOrderNumber(config.deviceId));
-    if (!configured) {
-      setLoading(false);
-      return;
-    }
+    pendingPlace.current = null;
+  }, [draft, fulfillment]);
+
+  const token = till?.token;
+  const locationId = till?.locationId;
+  useEffect(() => {
+    if (!token || !locationId) return;
     let active = true;
+    setLoading(true);
+    setMenuError(null);
     api
-      .listMenuItems(config.locationId)
+      .listMenuItems(token, locationId)
       .then((list) => active && setItems(list))
-      .catch((err) => active && setMenuError(errMsg(err)))
+      .catch((err) => {
+        if (!active) return;
+        if (err instanceof ApiError && err.status === 401) unpair(REVOKED_NOTICE);
+        else setMenuError(friendlyError(err));
+      })
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [configured]);
+  }, [token, locationId, unpair]);
+
+  function send<B extends CommandIn, R>(
+    pending: Pending<B>,
+    build: () => B,
+    call: (body: B) => Promise<R>,
+  ): Promise<R> {
+    return runCommand({
+      pending,
+      build,
+      send: call,
+      seqAfter,
+      onUnauthorized: () => unpair(REVOKED_NOTICE),
+    });
+  }
 
   const editable = placed === null;
   const total = orderTotalCents(draft);
@@ -88,65 +120,76 @@ export default function PosPage() {
   }
 
   async function placeOrder() {
-    if (draft.length === 0) return;
+    if (!till || draft.length === 0) return;
     setBusy("place");
     setActionError(null);
-    const orderNumber = peekOrderNumber(config.deviceId);
     try {
-      const order = await api.placeOrder({
-        device_id: config.deviceId,
-        location_id: config.locationId,
-        order_number: orderNumber,
-        channel: "pos",
-        fulfillment,
-        lines: toLineIns(draft),
-      });
-      advanceOrderNumber(config.deviceId);
-      setNextNumber(peekOrderNumber(config.deviceId));
+      const order = await send(
+        pendingPlace,
+        (): PlaceOrderRequest => ({
+          ...command(),
+          order_id: ulid(),
+          order_number: orderNumber(),
+          channel: "pos",
+          fulfillment,
+          lines: toLineIns(draft),
+        }),
+        (body) => api.placeOrder(till.token, body),
+      );
       setPlaced({ order, state: order.state });
     } catch (err) {
-      setActionError(errMsg(err));
+      setActionError(friendlyError(err));
     } finally {
       setBusy(null);
     }
   }
 
   async function sendToKitchen() {
-    if (!placed) return;
+    if (!till || !placed) return;
     setBusy("kitchen");
     setActionError(null);
     try {
-      const kitchen = await api.sendToKitchen(placed.order.id);
+      const kitchen = await send(pendingKitchen, command, (body) =>
+        api.sendToKitchen(till.token, placed.order.id, body),
+      );
       setPlaced({ ...placed, state: kitchen.state, kitchen });
     } catch (err) {
-      setActionError(errMsg(err));
+      setActionError(friendlyError(err));
     } finally {
       setBusy(null);
     }
   }
 
   async function payCash() {
-    if (!placed) return;
+    if (!till || !placed) return;
     setBusy("pay");
     setActionError(null);
     try {
-      const payment = await api.payOrder(placed.order.id, { method: "cash" });
+      const payment = await send(
+        pendingPay,
+        (): PayRequest => ({ ...command(), payment_id: ulid(), method: "cash" }),
+        (body) => api.payOrder(till.token, placed.order.id, body),
+      );
       setPlaced({ ...placed, state: payment.order_state, payment });
     } catch (err) {
-      setActionError(errMsg(err));
+      setActionError(friendlyError(err));
     } finally {
       setBusy(null);
     }
   }
 
   function newOrder() {
+    pendingPlace.current = null;
+    pendingKitchen.current = null;
+    pendingPay.current = null;
     setDraft([]);
     setPlaced(null);
     setActionError(null);
     setFulfillment("dine_in");
   }
 
-  if (!configured) return <ConfigNotice />;
+  if (!ready) return <p className="text-sm text-muted">Loading…</p>;
+  if (!till) return <PairTill />;
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
@@ -166,7 +209,13 @@ export default function PosPage() {
         <div className="flex max-h-[calc(100dvh-6rem)] flex-col rounded-2xl border border-border bg-surface">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="font-semibold">
-              Order <span className="text-muted">#{placed?.order.order_number ?? nextNumber}</span>
+              Order{" "}
+              <span className="text-muted">
+                #
+                {placed?.order.order_number ??
+                  pendingPlace.current?.order_number ??
+                  till.nextOrderNumber}
+              </span>
             </h2>
             {placed ? (
               <StateBadge state={placed.state} />
@@ -217,7 +266,11 @@ export default function PosPage() {
             )}
             {placed?.kitchen && (
               <p className="text-xs text-muted">
-                Sent to kitchen · {placed.kitchen.ticket_bytes} byte ticket
+                {placed.kitchen.printed
+                  ? "Ticket printed in the kitchen."
+                  : placed.kitchen.replayed
+                    ? "Already sent to the kitchen."
+                    : "Marked sent. No kitchen printer is set up on the server."}
               </p>
             )}
 

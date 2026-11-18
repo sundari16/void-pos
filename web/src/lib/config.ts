@@ -1,15 +1,20 @@
-// Runtime configuration, read from NEXT_PUBLIC_* env vars at build time.
-// Keep money in integer cents everywhere; only format for display (see money.ts).
+// Where the API is. In a venue install the API runs on the same machine as this web app,
+// on port 8000, so one build works at every venue. NEXT_PUBLIC_API_BASE overrides that
+// (it is fixed at build time). Money is integer cents everywhere; see money.ts.
 
-export const config = {
-  apiBase: (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000").replace(/\/$/, ""),
-  locationId: process.env.NEXT_PUBLIC_LOCATION_ID ?? "",
-  deviceId: process.env.NEXT_PUBLIC_DEVICE_ID ?? "",
-  orderNumberStart: Number(process.env.NEXT_PUBLIC_ORDER_NUMBER_START ?? "1000"),
-  currency: "AUD",
-} as const;
+const BUILD_API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim();
 
-/** True once the till knows which location + device it is ringing orders against. */
-export function isConfigured(): boolean {
-  return Boolean(config.locationId && config.deviceId);
+export const CURRENCY = "AUD";
+export const API_PORT = 8000;
+
+interface PageLocation {
+  protocol: string;
+  hostname: string;
+}
+
+export function apiBase(page?: PageLocation): string {
+  if (BUILD_API_BASE) return BUILD_API_BASE.replace(/\/$/, "");
+  const loc = page ?? (typeof window !== "undefined" ? window.location : undefined);
+  if (!loc) return `http://localhost:${API_PORT}`;
+  return `${loc.protocol}//${loc.hostname}:${API_PORT}`;
 }

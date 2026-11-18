@@ -2,54 +2,61 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { config, isConfigured } from "@/lib/config";
+import { friendlyError } from "@/lib/commands";
 import { formatCents } from "@/lib/money";
 import type { Closeout } from "@/lib/types";
-import { ConfigNotice } from "@/components/ConfigNotice";
+import { PairTill } from "@/components/PairTill";
+import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
-/** Today's date in Australia/Brisbane as yyyy-mm-dd (business dates are AU-local). */
-function brisbaneToday(): string {
+/** Today in the location's own timezone as yyyy-mm-dd: business dates are venue-local. */
+function todayIn(timezone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Australia/Brisbane",
+    timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
 }
 
-function errMsg(err: unknown): string {
-  if (err instanceof ApiError) return err.detail;
-  return err instanceof Error ? err.message : String(err);
-}
-
 export default function CloseoutPage() {
-  const [date, setDate] = useState(brisbaneToday());
+  const { till, ready, unpair } = useTill();
+  const [date, setDate] = useState<string | null>(null);
   const [report, setReport] = useState<Closeout | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const configured = isConfigured();
+
+  const token = till?.token;
+  const locationId = till?.locationId;
+  const timezone = till?.timezone ?? "Australia/Brisbane";
+
+  useEffect(() => {
+    if (till && date === null) setDate(todayIn(till.timezone));
+  }, [till, date]);
 
   const load = useCallback(
     async (businessDate: string) => {
+      if (!token || !locationId) return;
       setLoading(true);
       setError(null);
       try {
-        setReport(await api.closeout(config.locationId, businessDate));
+        setReport(await api.closeout(token, locationId, businessDate));
       } catch (err) {
         setReport(null);
-        setError(errMsg(err));
+        if (err instanceof ApiError && err.status === 401) unpair(REVOKED_NOTICE);
+        else setError(friendlyError(err));
       } finally {
         setLoading(false);
       }
     },
-    [],
+    [token, locationId, unpair],
   );
 
   useEffect(() => {
-    if (configured) load(date);
-  }, [configured, date, load]);
+    if (date) load(date);
+  }, [date, load]);
 
-  if (!configured) return <ConfigNotice />;
+  if (!ready) return <p className="text-sm text-muted">Loading…</p>;
+  if (!till) return <PairTill />;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
@@ -58,12 +65,12 @@ export default function CloseoutPage() {
         <div className="flex items-center gap-2">
           <input
             type="date"
-            value={date}
+            value={date ?? ""}
             onChange={(e) => setDate(e.target.value)}
             className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
           />
           <button
-            onClick={() => load(date)}
+            onClick={() => date && load(date)}
             className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface"
           >
             Refresh
@@ -115,10 +122,9 @@ export default function CloseoutPage() {
           </section>
 
           <p className="text-right text-xs text-muted">
-            Generated {new Date(report.generated_at).toLocaleString("en-AU", {
-              timeZone: "Australia/Brisbane",
-            })}{" "}
-            Brisbane
+            Generated{" "}
+            {new Date(report.generated_at).toLocaleString("en-AU", { timeZone: timezone })} ·{" "}
+            {timezone}
           </p>
         </div>
       )}

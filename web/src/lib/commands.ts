@@ -1,0 +1,68 @@
+// Sending a till command so that retrying is always safe.
+//
+// The request body (with its event_id, seq and order/payment ids) is built once and kept
+// in `pending` until the server answers. A dropped connection or a 5xx keeps it, so the
+// next tap resends the very same ids and the server replays the first result instead of
+// placing, printing or charging twice. A 4xx is final, so the body is dropped. A
+// seq_conflict means this till's counter fell behind the server: take a fresh seq after
+// the server's last one and resend once, keeping the event_id.
+
+import { ApiError } from "./api";
+import type { CommandIn } from "./types";
+
+export interface Pending<B> {
+  current: B | null;
+}
+
+export interface RunOptions<B extends CommandIn, R> {
+  pending: Pending<B>;
+  build: () => B;
+  send: (body: B) => Promise<R>;
+  /** Resync the till's counter past `lastSeq` and return a fresh seq. */
+  seqAfter: (lastSeq: number) => number;
+  onUnauthorized: () => void;
+}
+
+export function isRetryable(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 0 || err.status >= 500);
+}
+
+export async function runCommand<B extends CommandIn, R>(opts: RunOptions<B, R>): Promise<R> {
+  let body: B = opts.pending.current ?? opts.build();
+  opts.pending.current = body;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const result = await opts.send(body);
+      opts.pending.current = null;
+      return result;
+    } catch (err) {
+      const lastSeq = err instanceof ApiError ? err.body.last_seq : undefined;
+      const seqConflict = err instanceof ApiError && err.code === "seq_conflict";
+      if (attempt === 0 && seqConflict && typeof lastSeq === "number") {
+        body = { ...body, seq: opts.seqAfter(lastSeq) };
+        opts.pending.current = body;
+        continue;
+      }
+      if (err instanceof ApiError && err.status === 401) opts.onUnauthorized();
+      if (!isRetryable(err)) opts.pending.current = null;
+      throw err;
+    }
+  }
+}
+
+const MESSAGES: Record<string, string> = {
+  network_error:
+    "Can't reach the Void POS server. Check the till's Wi-Fi, then tap again. Retrying is safe.",
+  printer_unavailable:
+    "The kitchen printer isn't answering. Check it's on and connected, then send again.",
+  order_closed: "This order is already closed.",
+  order_voided: "This order was voided, so it can't go to the kitchen.",
+  invalid_token: "This till's pairing was revoked or replaced. Pair it again.",
+  invalid_pairing_code: "That pairing code isn't valid. Check it, or ask for a new one.",
+  pairing_code_expired: "That pairing code has expired. Ask the venue admin for a new one.",
+};
+
+export function friendlyError(err: unknown): string {
+  if (err instanceof ApiError) return MESSAGES[err.code] ?? err.detail;
+  return err instanceof Error ? err.message : String(err);
+}

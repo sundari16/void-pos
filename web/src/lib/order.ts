@@ -1,9 +1,10 @@
 // The draft order the till is building, before it is placed.
-// Money stays in integer cents throughout; the item->modifier tree is expressed with
-// client-local `ref` / `parentRef` ids that map straight onto the backend's LineIn.
+// Money stays in integer cents throughout. Each line's `ref` is a ULID minted when it is
+// added, and becomes that line's id on the server; modifiers point at their item's ref.
 
 import type { LineIn, MenuItem } from "./types";
 import type { QuickModifier } from "./modifiers";
+import { ulid } from "./ulid";
 
 export interface DraftModifier {
   ref: string;
@@ -24,20 +25,13 @@ export interface DraftItem {
   modifiers: DraftModifier[];
 }
 
-let counter = 0;
-/** A short unique ref for the lifetime of the page. */
-export function newRef(prefix: string): string {
-  counter += 1;
-  return `${prefix}-${counter}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
 export function draftItemFrom(
   item: MenuItem,
   quantity: number,
   chosen: QuickModifier[],
 ): DraftItem {
   return {
-    ref: newRef("item"),
+    ref: ulid(),
     menuItemId: item.id,
     name: item.name,
     kitchenName: item.kitchen_name ?? undefined,
@@ -46,7 +40,7 @@ export function draftItemFrom(
     taxRate: item.tax_rate,
     quantity,
     modifiers: chosen.map((m) => ({
-      ref: newRef("mod"),
+      ref: ulid(),
       name: m.name,
       kitchenName: m.kitchenName,
       unitPriceCents: m.priceDeltaCents,
@@ -70,12 +64,12 @@ export function orderLineCount(items: DraftItem[]): number {
   return items.reduce((sum, it) => sum + it.quantity, 0);
 }
 
-/** Flatten the draft into the backend's LineIn list (items then their modifier children). */
+/** Flatten the draft into the backend's lines (items, each followed by its modifiers). */
 export function toLineIns(items: DraftItem[]): LineIn[] {
   const lines: LineIn[] = [];
   for (const item of items) {
     lines.push({
-      ref: item.ref,
+      id: item.ref,
       menu_item_id: item.menuItemId,
       quantity: item.quantity,
       name_snapshot: item.name,
@@ -86,12 +80,14 @@ export function toLineIns(items: DraftItem[]): LineIn[] {
     });
     for (const mod of item.modifiers) {
       lines.push({
-        ref: mod.ref,
-        parent_ref: item.ref,
+        id: mod.ref,
+        parent_line_id: item.ref,
         quantity: 1,
         name_snapshot: mod.name,
         kitchen_name_snapshot: mod.kitchenName ?? null,
         unit_price_cents: mod.unitPriceCents,
+        // A modifier's revenue belongs to its item's class (the basis for tip-outs).
+        category_snapshot: item.category ?? null,
       });
     }
   }
