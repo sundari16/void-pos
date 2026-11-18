@@ -14,7 +14,7 @@ from ..devices import get_location
 from ..errors import Conflict, NotFound
 from ..events import EventType, OrderPlaced
 from ..events.types import PAID, SENT, VOIDED
-from ..models import Device, Order, Payment
+from ..models import Device, Order, Payment, Staff
 from ..printing import Printer, Rasterizer, print_order
 from .rules import check_order_lines
 
@@ -134,6 +134,7 @@ def void_order(
     reason: str,
     printer: Printer | None,
     rasterizer: Rasterizer | None = None,
+    approved_by: Staff | None = None,
 ) -> VoidOutcome:
     """Record ``order.voided``. An order with payments is refused (refund first), and so
     is one already voided. If the kitchen has the order, a VOID ticket prints first, so
@@ -165,7 +166,15 @@ def void_order(
         device,
         command,
         event_type=EventType.ORDER_VOIDED,
-        payload={"order_id": order_id, "reason": reason},
+        payload={
+            "order_id": order_id,
+            "reason": reason,
+            **(
+                {"approved_by": approved_by.id, "approved_by_name": approved_by.name}
+                if approved_by is not None
+                else {}
+            ),
+        },
         business_date=order.business_date,
     )
     return VoidOutcome(order, printed=printed, replayed=False)

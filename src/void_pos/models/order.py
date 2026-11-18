@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..ids import new_ulid
@@ -30,6 +30,7 @@ class Order(Base, TimestampMixin):
     channel: Mapped[str] = mapped_column(String(40), nullable=False)  # pos|voice|qr|web|aggregator
     fulfillment: Mapped[str] = mapped_column(String(20), nullable=False)  # pickup|delivery|dine_in
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|sent|paid|voided
+    table_label: Mapped[str | None] = mapped_column(String(40), nullable=True)  # "12", "Patio 3"
 
     lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
@@ -60,5 +61,8 @@ class OrderLine(Base, TimestampMixin):
     # lines only; a modifier follows its item. Unset for counter and takeaway orders.
     seat_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     course_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # When the kitchen got this line (projected from order.sent); unset until then, so a
+    # send after adding items prints only what's new.
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="lines")

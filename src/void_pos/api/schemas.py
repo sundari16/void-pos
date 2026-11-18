@@ -57,8 +57,12 @@ class KitchenResponse(BaseModel):
     replayed: bool = False
 
 
+Pin = Annotated[str, StringConstraints(pattern=r"^[0-9]{4,8}$")]
+
+
 class VoidRequest(CommandIn):
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    manager_pin: Pin | None = None  # needed once the location has a manager
 
 
 class VoidResponse(BaseModel):
@@ -177,6 +181,14 @@ class MenuItemUpdate(BaseModel):
     def _no_null_for_required(self) -> MenuItemUpdate:
         _no_null(self, _REQUIRED_ON_ITEM)
         return self
+
+
+class AvailabilityIn(BaseModel):
+    """Switch a dish off when it sells out (or back on). From a till this needs a
+    manager's PIN once the location has a manager."""
+
+    is_available: bool
+    manager_pin: Pin | None = None
 
 
 class MenuItemEdit(MenuItemUpdate):
@@ -337,6 +349,26 @@ class MenuChangeOut(BaseModel):
 
 
 # --- venue setup and pairing -------------------------------------------------------
+
+
+class StaffIn(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+    role: Literal["staff", "manager"] = "staff"
+    pin: Pin
+
+
+class PinIn(BaseModel):
+    pin: Pin
+
+
+class StaffOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    location_id: str
+    name: str
+    role: str
+    active: bool
 
 
 class LocationIn(BaseModel):

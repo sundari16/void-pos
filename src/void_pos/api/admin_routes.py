@@ -1,4 +1,4 @@
-"""Venue setup, admin only: locations, tills and their pairing codes."""
+"""Venue setup, admin only: locations, tills and their pairing codes, staff."""
 
 from __future__ import annotations
 
@@ -18,9 +18,20 @@ from ..devices import (
     register_device,
     revoke_device,
 )
+from ..staff import create_staff, deactivate_staff, list_staff, set_pin
 from .auth import AdminDep
 from .deps import get_session
-from .schemas import DeviceCreated, DeviceIn, DeviceOut, LocationIn, LocationOut, PairingCodeOut
+from .schemas import (
+    DeviceCreated,
+    DeviceIn,
+    DeviceOut,
+    LocationIn,
+    LocationOut,
+    PairingCodeOut,
+    PinIn,
+    StaffIn,
+    StaffOut,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -87,3 +98,36 @@ def revoke(device_id: str, session: SessionDep, _: AdminDep) -> DeviceOut:
     device = revoke_device(session, device_id)
     session.commit()
     return DeviceOut.of(device)
+
+
+@router.post(
+    "/locations/{location_id}/staff", response_model=StaffOut, status_code=status.HTTP_201_CREATED
+)
+def add_staff(location_id: str, body: StaffIn, session: SessionDep, _: AdminDep) -> StaffOut:
+    person = create_staff(
+        session, location_id=location_id, name=body.name, role=body.role, pin=body.pin
+    )
+    session.commit()
+    return StaffOut.model_validate(person)
+
+
+@router.get("/locations/{location_id}/staff", response_model=list[StaffOut])
+def read_staff(
+    location_id: str, session: SessionDep, _: AdminDep, include_inactive: bool = False
+) -> list[StaffOut]:
+    people = list_staff(session, location_id, include_inactive=include_inactive)
+    return [StaffOut.model_validate(p) for p in people]
+
+
+@router.post("/staff/{staff_id}/pin", response_model=StaffOut)
+def change_pin(staff_id: str, body: PinIn, session: SessionDep, _: AdminDep) -> StaffOut:
+    person = set_pin(session, staff_id, body.pin)
+    session.commit()
+    return StaffOut.model_validate(person)
+
+
+@router.post("/staff/{staff_id}/deactivate", response_model=StaffOut)
+def deactivate(staff_id: str, session: SessionDep, _: AdminDep) -> StaffOut:
+    person = deactivate_staff(session, staff_id)
+    session.commit()
+    return StaffOut.model_validate(person)

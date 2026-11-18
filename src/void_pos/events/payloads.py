@@ -89,6 +89,8 @@ class OrderRef(_Payload):
 
 class OrderVoided(OrderRef):
     reason: str | None = Field(default=None, max_length=200)
+    approved_by: Ulid | None = None  # the manager whose PIN approved it
+    approved_by_name: str | None = Field(default=None, max_length=120)
 
 
 class PaymentIn(_Payload):

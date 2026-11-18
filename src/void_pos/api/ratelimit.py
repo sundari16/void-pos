@@ -33,9 +33,9 @@ class TooManyAttempts(VoidPosError):
     status_code = 429
     code = "too_many_attempts"
 
-    def __init__(self, retry_after: int) -> None:
+    def __init__(self, retry_after: int, what: str = "pairing codes") -> None:
         super().__init__(
-            f"too many wrong pairing codes; try again in {retry_after} seconds",
+            f"too many wrong {what}; try again in {retry_after} seconds",
             retry_after=retry_after,
         )
         self.headers = {"Retry-After": str(retry_after)}
@@ -48,8 +48,10 @@ class AttemptLimiter:
         per_client: int = 10,
         overall: int = 50,
         window: float = 600,
+        what: str = "pairing codes",
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        self.what = what
         self.per_client = per_client
         self.overall = overall
         self.window = window
@@ -72,7 +74,8 @@ class AttemptLimiter:
             for key, limit in ((client, self.per_client), (GLOBAL, self.overall)):
                 times = self._recent(key, now)
                 if len(times) >= limit:
-                    raise TooManyAttempts(max(1, math.ceil(times[0] + self.window - now)))
+                    retry = max(1, math.ceil(times[0] + self.window - now))
+                    raise TooManyAttempts(retry, self.what)
 
     def failed(self, client: str) -> None:
         with self._lock:
@@ -96,3 +99,9 @@ def client_address(request: Request) -> str:
 @lru_cache
 def get_pairing_limiter() -> AttemptLimiter:
     return AttemptLimiter()
+
+
+@lru_cache
+def get_pin_limiter() -> AttemptLimiter:
+    """Wrong manager PINs, counted per till (a till's identity comes from its token)."""
+    return AttemptLimiter(per_client=5, overall=50, window=300, what="PINs")

@@ -25,6 +25,7 @@ from ..payments import (
 from ..printing import Printer, Rasterizer
 from ..reporting import shift_closeout
 from ..sync import MAX_PULL, pull_events, push_events
+from .approval import PinLimiterDep, approve
 from .auth import AdminDep, DeviceDep, PrincipalDep
 from .deps import get_printer, get_rasterizer, get_session
 from .schemas import (
@@ -109,7 +110,9 @@ def void_route(
     device: DeviceDep,
     printer: PrinterDep,
     rasterizer: RasterizerDep,
+    pins: PinLimiterDep,
 ) -> VoidResponse:
+    manager = approve(session, device, body.manager_pin, pins)
     outcome = void_order(
         session,
         device,
@@ -118,6 +121,7 @@ def void_route(
         reason=body.reason,
         printer=printer,
         rasterizer=rasterizer,
+        approved_by=manager,
     )
     session.commit()
     return VoidResponse(
