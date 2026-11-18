@@ -16,7 +16,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from void_pos.api.deps import get_printer, get_session
 from void_pos.clock import utcnow
@@ -32,6 +32,15 @@ TILL_TOKEN = "till-1-token-for-the-test-suite"
 TAMIL_DOSA = "மசாலா தோசை"
 
 
+_ENGINES: list[Engine] = []
+
+
+def dispose_engines() -> None:
+    """Close every engine the last test made (tests/conftest.py calls this after each)."""
+    while _ENGINES:
+        _ENGINES.pop().dispose()
+
+
 def make_engine() -> Engine:
     url = os.environ.get("VOIDPOS_TEST_DATABASE_URL")
     if url:
@@ -40,7 +49,11 @@ def make_engine() -> Engine:
         with bootstrap.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA "{schema}"'))
         bootstrap.dispose()
-        engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
+        # No pool: a connection closes with its session, so a long suite never piles up
+        # idle connections against the server's limit.
+        engine = create_engine(
+            url, connect_args={"options": f"-csearch_path={schema}"}, poolclass=NullPool
+        )
     else:
         engine = create_engine(
             "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -48,6 +61,7 @@ def make_engine() -> Engine:
         # Enforce foreign keys like PostgreSQL does, so a dangling reference fails here too.
         event.listen(engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))
     Base.metadata.create_all(engine)
+    _ENGINES.append(engine)
     return engine
 
 
