@@ -58,13 +58,15 @@ class AttemptLimiter:
         self._lock = Lock()
 
     def _recent(self, key: str, now: float) -> deque[float]:
-        times = self._failures.setdefault(key, deque())
+        """The key's failures still inside the window (empty if it has none: not stored)."""
+        times = self._failures.get(key, deque())
         while times and times[0] <= now - self.window:
             times.popleft()
         return times
 
     def check(self, client: str) -> None:
-        """Raise TooManyAttempts if this client, or everyone, has failed too often."""
+        """Raise TooManyAttempts if this client, or everyone, has failed too often. Only
+        failures are stored, so checking costs no memory however many clients call."""
         with self._lock:
             now = self.clock()
             for key, limit in ((client, self.per_client), (GLOBAL, self.overall)):
@@ -76,7 +78,8 @@ class AttemptLimiter:
         with self._lock:
             now = self.clock()
             for key in (client, GLOBAL):
-                self._recent(key, now).append(now)
+                self._failures[key] = self._recent(key, now)
+                self._failures[key].append(now)
             for key in list(self._failures):
                 if not self._recent(key, now):
                     del self._failures[key]

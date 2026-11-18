@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import BigInteger, cast, func, select
 from sqlalchemy.orm import Session, aliased
 
 from ..errors import NotFound
@@ -36,9 +36,10 @@ def revenue_class_sales(session: Session, location_id: str, business_date: date)
     once per unit of the item. Lines with no category fall under ``uncategorized``."""
     item = aliased(OrderLine)
     category = func.coalesce(OrderLine.category_snapshot, item.category_snapshot)
-    quantity = OrderLine.quantity * func.coalesce(item.quantity, 1)
+    # 64-bit before multiplying: price x modifier qty x item qty overflows a 32-bit integer.
+    quantity = cast(OrderLine.quantity, BigInteger) * func.coalesce(item.quantity, 1)
     rows = session.execute(
-        select(category, func.sum(OrderLine.unit_price_cents * quantity))
+        select(category, func.sum(cast(OrderLine.unit_price_cents, BigInteger) * quantity))
         .join(Order, Order.id == OrderLine.order_id)
         .outerjoin(item, item.id == OrderLine.parent_line_id)
         .where(

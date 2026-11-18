@@ -180,6 +180,11 @@ export default function PosPage() {
     }
   }
 
+  /** Apply a server answer to the order it was about, never to one started since. */
+  function update(orderId: string, change: (p: Placed) => Placed) {
+    setPlaced((current) => (current && current.order.id === orderId ? change(current) : current));
+  }
+
   async function sendToKitchen() {
     if (!till || !placed) return;
     setBusy("kitchen");
@@ -188,7 +193,7 @@ export default function PosPage() {
       const kitchen = await send(pendingKitchen, command, (body) =>
         api.sendToKitchen(till.token, placed.order.id, body),
       );
-      setPlaced({ ...placed, state: kitchen.state, kitchen });
+      update(placed.order.id, (p) => ({ ...p, state: kitchen.state, kitchen }));
     } catch (err) {
       setActionError(friendlyError(err));
     } finally {
@@ -214,13 +219,14 @@ export default function PosPage() {
         }),
         (body) => api.payOrder(till.token, placed.order.id, body),
       );
-      const seen = placed.payments.some((p) => p.payment_id === payment.payment_id);
-      setPlaced({
-        ...placed,
+      update(placed.order.id, (p) => ({
+        ...p,
         state: payment.order_state,
-        payments: seen ? placed.payments : [...placed.payments, payment],
+        payments: p.payments.some((x) => x.payment_id === payment.payment_id)
+          ? p.payments
+          : [...p.payments, payment],
         balance: payment.balance_cents,
-      });
+      }));
     } catch (err) {
       setActionError(friendlyError(err));
     } finally {
@@ -239,7 +245,7 @@ export default function PosPage() {
         (): VoidRequest => ({ ...command(), reason }),
         (body) => api.voidOrder(till.token, placed.order.id, body),
       );
-      setPlaced({ ...placed, state: voided.state, voided });
+      update(placed.order.id, (p) => ({ ...p, state: voided.state, voided }));
     } catch (err) {
       setActionError(friendlyError(err));
     } finally {
@@ -248,6 +254,17 @@ export default function PosPage() {
   }
 
   function newOrder() {
+    if (
+      placed &&
+      placed.payments.length > 0 &&
+      placed.balance > 0 &&
+      !window.confirm(
+        `${formatCents(placed.balance)} is still owing on order #${placed.order.order_number}. ` +
+          "Start a new order and leave it unpaid?",
+      )
+    ) {
+      return;
+    }
     pendingPlace.current = null;
     pendingKitchen.current = null;
     pendingPay.current = null;
@@ -346,7 +363,7 @@ export default function PosPage() {
                 Voided.{" "}
                 {placed.voided.printed
                   ? "A void ticket went to the kitchen."
-                  : placed.kitchen
+                  : placed.kitchen && !placed.voided.replayed
                     ? "No void ticket printed: tell the kitchen."
                     : ""}
               </p>
@@ -411,7 +428,8 @@ export default function PosPage() {
                   )}
                 <button
                   onClick={newOrder}
-                  className="w-full rounded-xl px-4 py-2 text-sm font-medium text-muted hover:bg-background"
+                  disabled={busy !== null}
+                  className="w-full rounded-xl px-4 py-2 text-sm font-medium text-muted hover:bg-background disabled:opacity-40"
                 >
                   New order
                 </button>

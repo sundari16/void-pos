@@ -148,3 +148,13 @@ def test_wrong_codes_are_throttled_but_the_right_one_still_works_later(ctx: Ctx)
         "/devices/pair", json={"pairing_code": code}, headers={"X-Forwarded-For": "192.168.1.40"}
     )
     assert other.status_code == 200, other.text
+
+
+def test_checking_many_clients_stores_nothing() -> None:
+    limiter = AttemptLimiter(per_client=3, overall=5, window=60, clock=lambda: 1000.0)
+    for i in range(5):
+        limiter.failed(f"10.0.0.{i}")
+    for i in range(1000):  # forged addresses while everyone is locked out
+        with pytest.raises(TooManyAttempts):
+            limiter.check(f"forged-{i}")
+    assert len(limiter._failures) == 6  # the five clients and the overall count

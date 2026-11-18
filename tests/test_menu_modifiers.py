@@ -353,3 +353,16 @@ def test_import_modifiers_from_the_command_line(
     assert "Did create 8, update 0, attach 2" in capsys.readouterr().out
     assert main(args) == 0
     assert "Did create 0, update 0, attach 0, leave 8 unchanged." in capsys.readouterr().out
+
+
+def test_import_checks_the_sheet_against_existing_groups_before_writing(
+    menu: tuple[Session, str],
+) -> None:
+    s, loc = menu
+    import_modifiers(s, loc, parse_modifier_csv("group,modifier,min\nExtras,Butter,2\n"))
+    clash = parse_modifier_csv("group,modifier,max\nExtras,Butter,1\nExtras,Chutney,\n")
+    for dry_run in (True, False):
+        with pytest.raises(InvalidRequest, match="'Extras' would allow at most 1 but need 2"):
+            import_modifiers(s, loc, clash, dry_run=dry_run)
+    [extras] = list_modifier_groups(s, loc)
+    assert (extras.min_select, extras.max_select) == (2, None)

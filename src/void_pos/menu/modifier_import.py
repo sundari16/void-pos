@@ -226,6 +226,14 @@ def import_modifiers(
         raise InvalidRequest("; ".join(missing), code="unknown_menu_item", problems=missing)
 
     existing = {g.name.casefold(): g for g in list_modifier_groups(session, location_id)}
+    clashes = [
+        problem
+        for rows in groups
+        if (group := existing.get(rows.name.casefold())) is not None
+        for problem in _merged_problems(rows, group)
+    ]
+    if clashes:
+        raise InvalidRequest("; ".join(clashes), code="invalid_menu_file", problems=clashes)
     result = ModifierImportResult()
     for rows in groups:
         wanted = {"name": rows.name, **rows.settings}
@@ -253,6 +261,21 @@ def import_modifiers(
             if group is not None and not dry_run:
                 attach_modifier_group(session, menu_item_id=item.id, modifier_group_id=group.id)
     return result
+
+
+def _merged_problems(rows: GroupRows, group: ModifierGroup) -> list[str]:
+    """What would be wrong with an existing group once the sheet's settings land on it."""
+    merged = {field: getattr(group, field) for field in _GROUP_SETTINGS} | rows.settings
+    low, high = merged["min_select"], merged["max_select"]
+    start, end = merged["available_from"], merged["available_to"]
+    problems = []
+    if high is not None and high < low:
+        problems.append(
+            f"row {rows.line}: {rows.name!r} would allow at most {high} but need {low}"
+        )
+    if start is not None and start == end:
+        problems.append(f"row {rows.line}: {rows.name!r} would start and end at the same time")
+    return problems
 
 
 def _import_group_modifiers(

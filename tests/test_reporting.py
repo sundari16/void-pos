@@ -127,3 +127,31 @@ def test_revenue_class_excludes_unpaid_orders() -> None:
 def test_closeout_unknown_location_raises() -> None:
     with _session() as s, pytest.raises(LookupError):
         shift_closeout(s, "00000000000000000000000000", TODAY)
+
+
+def test_revenue_by_class_handles_big_extended_quantities() -> None:
+    # 999 items x 999 of a $100 modifier is beyond a 32-bit sum (PostgreSQL integer).
+    with _session() as s:
+        ids = _seed_day(s)
+        item_line, order_id = new_ulid(), new_ulid()
+        for seq, type_, payload in (
+            (9, "order.placed", {
+                "order_id": order_id, "order_number": 1004, "channel": "pos",
+                "fulfillment": "pickup",
+                "lines": [
+                    {"id": item_line, "quantity": 999, "name_snapshot": "Party", "unit_price_cents": 0,
+                     "category_snapshot": "Catering"},
+                    {"id": new_ulid(), "parent_line_id": item_line, "quantity": 999,
+                     "name_snapshot": "Tray", "unit_price_cents": 10_000},
+                ]}),
+            (10, "order.paid", {"order_id": order_id}),
+        ):
+            ingest_event(s, {
+                "event_id": new_ulid(), "device_id": ids["device"], "seq": seq,
+                "location_id": ids["loc"], "business_date": TODAY,
+                "occurred_at": T0 + timedelta(seconds=seq), "type": type_, "payload": payload,
+            })
+        s.commit()
+        assert shift_closeout(s, ids["loc"], TODAY)["revenue_by_class_cents"]["Catering"] == (
+            999 * 999 * 10_000
+        )

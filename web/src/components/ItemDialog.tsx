@@ -141,7 +141,8 @@ function GroupPicker({
   const hours = windowLabel(group.available_from, group.available_to);
 
   return (
-    <fieldset disabled={!onSale} className={onSale ? "" : "opacity-50"}>
+    // Off sale: nothing new can be picked, but a choice made earlier can still be removed.
+    <fieldset className={onSale ? "" : "opacity-60"}>
       <legend className="mb-2 flex w-full items-baseline justify-between gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-muted">{group.name}</span>
         <span className="text-xs text-muted">
@@ -176,7 +177,7 @@ function GroupPicker({
                 </span>
                 <button
                   onClick={() => onChange(setCount(group, selection, mod.id, count + 1))}
-                  disabled={full}
+                  disabled={full || !onSale}
                   aria-label={`One more ${mod.name}`}
                   className="px-2.5 py-1.5 disabled:opacity-40"
                 >
@@ -189,7 +190,7 @@ function GroupPicker({
             <button
               key={mod.id}
               onClick={() => onChange(toggle(group, selection, mod.id))}
-              disabled={!count && full && multiple}
+              disabled={!count && (!onSale || (full && multiple))}
               aria-pressed={count > 0}
               className={`rounded-full border px-3 py-1.5 text-sm transition disabled:opacity-40 ${
                 count ? "border-accent bg-accent text-white" : "border-border bg-surface hover:border-accent"
