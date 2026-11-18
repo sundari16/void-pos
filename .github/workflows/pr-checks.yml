@@ -109,6 +109,8 @@ jobs:
           LOC=$(docker compose exec -T api void-pos list-locations | head -1 | cut -d' ' -f1)
           docker compose exec -T api void-pos import-menu --location "$LOC" --file - < docs/menu-template.csv
           docker compose exec -T api void-pos import-menu --location "$LOC" --file - < docs/menu-template.csv | grep "leave 3 unchanged"
+          docker compose exec -T api void-pos import-modifiers --location "$LOC" --file - < docs/modifier-template.csv
+          docker compose exec -T api void-pos import-modifiers --location "$LOC" --file - < docs/modifier-template.csv | grep "attach 0, leave 8 unchanged"
       - name: Logs
         if: failure()
         run: docker compose logs --no-color

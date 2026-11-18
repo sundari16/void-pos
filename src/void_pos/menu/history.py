@@ -11,6 +11,7 @@ their snapshots, so restoring a deleted item doesn't relink old orders to it.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import time
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
@@ -19,14 +20,49 @@ from sqlalchemy.orm import Session
 from ..errors import Conflict, InvalidRequest, NotFound
 from ..models import MenuChange, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup, OrderLine
 
-ITEM_FIELDS = ("name", "kitchen_name", "category", "base_price_cents", "tax_rate", "is_available")
+ITEM_FIELDS = (
+    "name",
+    "kitchen_name",
+    "category",
+    "base_price_cents",
+    "tax_rate",
+    "is_available",
+    "available_from",
+    "available_to",
+)
+GROUP_FIELDS = ("name", "min_select", "max_select", "available_from", "available_to")
+MODIFIER_FIELDS = ("name", "kitchen_name", "price_delta_cents")
+_TIME_FIELDS = {"available_from", "available_to"}
 _LABELS = {"menu_item": "item", "modifier_group": "modifier group", "modifier": "modifier"}
 
 
+def _to_json(value: Any) -> Any:
+    return value.isoformat() if isinstance(value, time) else value
+
+
+def from_json(field: str, value: Any) -> Any:
+    """A recorded value back as the model's type (times are stored as ``HH:MM:SS``)."""
+    if field in _TIME_FIELDS and isinstance(value, str):
+        return time.fromisoformat(value)
+    return value
+
+
+def _values(row: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: _to_json(getattr(row, field)) for field in fields}
+
+
 def item_values(item: MenuItem) -> dict[str, Any]:
-    values = {field: getattr(item, field) for field in ITEM_FIELDS}
+    values = _values(item, ITEM_FIELDS)
     values["tax_rate"] = float(item.tax_rate)
     return values
+
+
+def group_values(group: ModifierGroup) -> dict[str, Any]:
+    return _values(group, GROUP_FIELDS)
+
+
+def modifier_values(modifier: Modifier) -> dict[str, Any]:
+    return _values(modifier, MODIFIER_FIELDS)
 
 
 def item_snapshot(session: Session, item: MenuItem) -> dict[str, Any]:
@@ -44,23 +80,16 @@ def item_snapshot(session: Session, item: MenuItem) -> dict[str, Any]:
 
 
 def group_snapshot(group: ModifierGroup) -> dict[str, Any]:
-    return {
-        "id": group.id,
-        "location_id": group.location_id,
-        "name": group.name,
-        "min_select": group.min_select,
-        "max_select": group.max_select,
-    }
+    return {"id": group.id, "location_id": group.location_id, **group_values(group)}
 
 
 def modifier_snapshot(modifier: Modifier) -> dict[str, Any]:
-    return {
-        "id": modifier.id,
-        "group_id": modifier.group_id,
-        "name": modifier.name,
-        "kitchen_name": modifier.kitchen_name,
-        "price_delta_cents": modifier.price_delta_cents,
-    }
+    return {"id": modifier.id, "group_id": modifier.group_id, **modifier_values(modifier)}
+
+
+def _restore(snap: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """A snapshot's field values for a new row; fields added since it was taken are unset."""
+    return {field: from_json(field, snap[field]) for field in fields if field in snap}
 
 
 def record(
@@ -186,23 +215,30 @@ def _revert_item_create(session: Session, change: MenuChange) -> MenuChange:
     return _undo(change, session, "delete", before=before)
 
 
-def _revert_item_update(session: Session, change: MenuChange) -> MenuChange:
-    item = _item(session, change)
+_MODELS: dict[str, Any] = {
+    "menu_item": (MenuItem, item_values),
+    "modifier_group": (ModifierGroup, group_values),
+    "modifier": (Modifier, modifier_values),
+}
+
+
+def _revert_update(session: Session, change: MenuChange) -> MenuChange:
+    model, values = _MODELS[change.entity]
+    row = session.get(model, change.entity_id)
+    if row is None:
+        raise NotFound(f"{_LABELS[change.entity]} not found")
     restore = change.before or {}
-    current = {field: item_values(item)[field] for field in restore}
+    now = values(row)
+    current = {field: now[field] for field in restore}
     for field, value in restore.items():
-        setattr(item, field, value)
+        setattr(row, field, from_json(field, value))
     session.flush()
     return _undo(change, session, "update", before=current, after=restore)
 
 
 def _revert_item_delete(session: Session, change: MenuChange) -> MenuChange:
     snap = change.before or {}
-    item = MenuItem(
-        id=snap["id"],
-        location_id=snap["location_id"],
-        **{field: snap[field] for field in ITEM_FIELDS},
-    )
+    item = MenuItem(id=snap["id"], location_id=snap["location_id"], **_restore(snap, ITEM_FIELDS))
     session.add(item)
     session.flush()
     for group_id in snap.get("modifier_group_ids", []):
@@ -254,7 +290,10 @@ def _revert_group_create(session: Session, change: MenuChange) -> MenuChange:
 
 
 def _revert_group_delete(session: Session, change: MenuChange) -> MenuChange:
-    group = ModifierGroup(**(change.before or {}))
+    snap = change.before or {}
+    group = ModifierGroup(
+        id=snap["id"], location_id=snap["location_id"], **_restore(snap, GROUP_FIELDS)
+    )
     session.add(group)
     session.flush()
     return _undo(change, session, "create", after=group_snapshot(group))
@@ -273,7 +312,7 @@ def _revert_modifier_delete(session: Session, change: MenuChange) -> MenuChange:
     snap = change.before or {}
     if session.get(ModifierGroup, snap["group_id"]) is None:
         raise Conflict("that modifier's group no longer exists", code="group_missing")
-    modifier = Modifier(**snap)
+    modifier = Modifier(id=snap["id"], group_id=snap["group_id"], **_restore(snap, MODIFIER_FIELDS))
     session.add(modifier)
     session.flush()
     return _undo(change, session, "create", after=modifier_snapshot(modifier))
@@ -281,12 +320,14 @@ def _revert_modifier_delete(session: Session, change: MenuChange) -> MenuChange:
 
 _REVERTS: dict[tuple[str, str], Callable[[Session, MenuChange], MenuChange]] = {
     ("menu_item", "create"): _revert_item_create,
-    ("menu_item", "update"): _revert_item_update,
+    ("menu_item", "update"): _revert_update,
     ("menu_item", "delete"): _revert_item_delete,
     ("menu_item", "attach"): _revert_item_attach,
     ("menu_item", "detach"): _revert_item_detach,
     ("modifier_group", "create"): _revert_group_create,
+    ("modifier_group", "update"): _revert_update,
     ("modifier_group", "delete"): _revert_group_delete,
     ("modifier", "create"): _revert_modifier_create,
+    ("modifier", "update"): _revert_update,
     ("modifier", "delete"): _revert_modifier_delete,
 }

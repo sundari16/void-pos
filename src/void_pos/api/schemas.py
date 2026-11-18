@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Annotated, Any, Literal
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -15,6 +16,7 @@ from pydantic import (
 from ..clock import as_aware
 from ..events.payloads import CURRENCY_PATTERN, MAX_LINE_CENTS, OrderPlaced
 from ..ids import Ulid
+from ..menu.service import TillMenu
 from ..models import Device, Location, MenuChange
 
 # --- till commands ----------------------------------------------------------------
@@ -119,6 +121,21 @@ class PullResponse(BaseModel):
 Name = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 
 
+def _wall_clock(value: time) -> time:
+    if value.tzinfo is not None:
+        raise ValueError("use the location's local time without a timezone, e.g. 11:30")
+    return value
+
+
+LocalTime = Annotated[time, AfterValidator(_wall_clock)]
+
+
+def _no_null(model: BaseModel, required: tuple[str, ...]) -> None:
+    cleared = [f for f in required if f in model.model_fields_set and getattr(model, f) is None]
+    if cleared:
+        raise ValueError(f"{', '.join(cleared)} can't be cleared")
+
+
 class MenuItemIn(BaseModel):
     name: Name
     base_price_cents: int = Field(ge=0, le=MAX_LINE_CENTS)
@@ -126,6 +143,8 @@ class MenuItemIn(BaseModel):
     category: str | None = Field(default=None, max_length=120)
     tax_rate: float = Field(default=0, ge=0, le=1)
     is_available: bool = True
+    available_from: LocalTime | None = None
+    available_to: LocalTime | None = None
 
 
 _REQUIRED_ON_ITEM = ("name", "base_price_cents", "tax_rate", "is_available")
@@ -138,14 +157,12 @@ class MenuItemUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=120)
     tax_rate: float | None = Field(default=None, ge=0, le=1)
     is_available: bool | None = None
+    available_from: LocalTime | None = None
+    available_to: LocalTime | None = None
 
     @model_validator(mode="after")
     def _no_null_for_required(self) -> MenuItemUpdate:
-        cleared = [
-            f for f in _REQUIRED_ON_ITEM if f in self.model_fields_set and getattr(self, f) is None
-        ]
-        if cleared:
-            raise ValueError(f"{', '.join(cleared)} can't be cleared")
+        _no_null(self, _REQUIRED_ON_ITEM)
         return self
 
 
@@ -160,12 +177,29 @@ class MenuItemOut(BaseModel):
     base_price_cents: int
     tax_rate: float
     is_available: bool
+    available_from: time | None
+    available_to: time | None
 
 
 class ModifierGroupIn(BaseModel):
     name: Name
     min_select: int = Field(default=0, ge=0, le=100)
     max_select: int | None = Field(default=None, ge=0, le=100)
+    available_from: LocalTime | None = None
+    available_to: LocalTime | None = None
+
+
+class ModifierGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    min_select: int | None = Field(default=None, ge=0, le=100)
+    max_select: int | None = Field(default=None, ge=0, le=100)
+    available_from: LocalTime | None = None
+    available_to: LocalTime | None = None
+
+    @model_validator(mode="after")
+    def _no_null_for_required(self) -> ModifierGroupUpdate:
+        _no_null(self, ("name", "min_select"))
+        return self
 
 
 class ModifierGroupOut(BaseModel):
@@ -176,12 +210,25 @@ class ModifierGroupOut(BaseModel):
     name: str
     min_select: int
     max_select: int | None
+    available_from: time | None
+    available_to: time | None
 
 
 class ModifierIn(BaseModel):
     name: Name
     price_delta_cents: int = Field(default=0, ge=-MAX_LINE_CENTS, le=MAX_LINE_CENTS)
     kitchen_name: str | None = Field(default=None, max_length=200)
+
+
+class ModifierUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    price_delta_cents: int | None = Field(default=None, ge=-MAX_LINE_CENTS, le=MAX_LINE_CENTS)
+    kitchen_name: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _no_null_for_required(self) -> ModifierUpdate:
+        _no_null(self, ("name", "price_delta_cents"))
+        return self
 
 
 class ModifierOut(BaseModel):
@@ -192,6 +239,50 @@ class ModifierOut(BaseModel):
     name: str
     kitchen_name: str | None
     price_delta_cents: int
+
+
+class TillMenuItem(MenuItemOut):
+    modifier_group_ids: list[str]
+    available_now: bool
+
+
+class TillModifierGroup(ModifierGroupOut):
+    modifiers: list[ModifierOut]
+    available_now: bool
+
+
+class TillMenuOut(BaseModel):
+    """A location's whole menu for a till; ``available_now`` is as of ``local_time``."""
+
+    location_id: str
+    timezone: str
+    local_time: time
+    items: list[TillMenuItem]
+    modifier_groups: list[TillModifierGroup]
+
+    @classmethod
+    def of(cls, menu: TillMenu) -> TillMenuOut:
+        return cls(
+            location_id=menu.location.id,
+            timezone=menu.location.timezone,
+            local_time=menu.local_time.replace(microsecond=0),
+            items=[
+                TillMenuItem(
+                    **MenuItemOut.model_validate(entry.item).model_dump(),
+                    modifier_group_ids=entry.modifier_group_ids,
+                    available_now=entry.available_now,
+                )
+                for entry in menu.items
+            ],
+            modifier_groups=[
+                TillModifierGroup(
+                    **ModifierGroupOut.model_validate(entry.group).model_dump(),
+                    modifiers=[ModifierOut.model_validate(m) for m in entry.modifiers],
+                    available_now=entry.available_now,
+                )
+                for entry in menu.groups
+            ],
+        )
 
 
 class MenuChangeOut(BaseModel):

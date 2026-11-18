@@ -17,7 +17,10 @@ from ..menu import (
     list_changes,
     list_items,
     revert_change,
+    till_menu,
     update_item,
+    update_modifier,
+    update_modifier_group,
 )
 from .auth import AdminDep, PrincipalDep
 from .deps import get_session
@@ -28,13 +31,23 @@ from .schemas import (
     MenuItemUpdate,
     ModifierGroupIn,
     ModifierGroupOut,
+    ModifierGroupUpdate,
     ModifierIn,
     ModifierOut,
+    ModifierUpdate,
+    TillMenuOut,
 )
 
 router = APIRouter(tags=["menu"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+@router.get("/locations/{location_id}/menu", response_model=TillMenuOut)
+def read_till_menu(location_id: str, session: SessionDep, principal: PrincipalDep) -> TillMenuOut:
+    """The whole menu for a till: items, their modifier groups, and what is on sale now."""
+    principal.require_location(location_id)
+    return TillMenuOut.of(till_menu(session, location_id))
 
 
 @router.post(
@@ -92,6 +105,24 @@ def create_group(
     group = create_modifier_group(session, location_id=location_id, **body.model_dump())
     session.commit()
     return ModifierGroupOut.model_validate(group)
+
+
+@router.patch("/menu/modifier-groups/{group_id}", response_model=ModifierGroupOut)
+def patch_group(
+    group_id: str, body: ModifierGroupUpdate, session: SessionDep, _: AdminDep
+) -> ModifierGroupOut:
+    group = update_modifier_group(session, group_id, body.model_dump(exclude_unset=True))
+    session.commit()
+    return ModifierGroupOut.model_validate(group)
+
+
+@router.patch("/menu/modifiers/{modifier_id}", response_model=ModifierOut)
+def patch_modifier(
+    modifier_id: str, body: ModifierUpdate, session: SessionDep, _: AdminDep
+) -> ModifierOut:
+    modifier = update_modifier(session, modifier_id, body.model_dump(exclude_unset=True))
+    session.commit()
+    return ModifierOut.model_validate(modifier)
 
 
 @router.post(
