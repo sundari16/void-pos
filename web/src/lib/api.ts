@@ -13,6 +13,8 @@ import type {
   PaymentResponse,
   PlaceOrderRequest,
   TillMenu,
+  VoidRequest,
+  VoidResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -93,6 +95,9 @@ export function createApi(fetchImpl: Fetch = (input, init) => fetch(input, init)
     },
     sendToKitchen(token: string, orderId: string, body: CommandIn): Promise<KitchenResponse> {
       return request(`/orders/${orderId}/send-to-kitchen`, { method: "POST", token, body });
+    },
+    voidOrder(token: string, orderId: string, body: VoidRequest): Promise<VoidResponse> {
+      return request(`/orders/${orderId}/void`, { method: "POST", token, body });
     },
     payOrder(token: string, orderId: string, body: PayRequest): Promise<PaymentResponse> {
       return request(`/orders/${orderId}/pay`, { method: "POST", token, body });

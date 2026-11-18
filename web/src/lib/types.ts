@@ -100,6 +100,17 @@ export interface KitchenResponse {
   replayed: boolean;
 }
 
+export interface VoidRequest extends CommandIn {
+  reason: string;
+}
+
+export interface VoidResponse {
+  order_id: string;
+  state: string;
+  printed: boolean;
+  replayed: boolean;
+}
+
 export interface PayRequest extends CommandIn {
   payment_id: string;
   method: "cash" | "external";

@@ -56,6 +56,17 @@ class KitchenResponse(BaseModel):
     replayed: bool = False
 
 
+class VoidRequest(CommandIn):
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+
+
+class VoidResponse(BaseModel):
+    order_id: str
+    state: str
+    printed: bool  # a VOID ticket went to the kitchen (only if it had the order)
+    replayed: bool = False
+
+
 class PayRequest(CommandIn):
     payment_id: Ulid
     method: Literal["cash", "external"] = "cash"

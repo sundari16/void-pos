@@ -87,6 +87,10 @@ class OrderRef(_Payload):
     order_id: Ulid
 
 
+class OrderVoided(OrderRef):
+    reason: str | None = Field(default=None, max_length=200)
+
+
 class PaymentIn(_Payload):
     id: Ulid
     provider: str = Field(min_length=1, max_length=40)
@@ -112,7 +116,7 @@ class LoyaltyRecorded(_Payload):
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     EventType.ORDER_PLACED: OrderPlaced,
     EventType.ORDER_SENT: OrderRef,
-    EventType.ORDER_VOIDED: OrderRef,
+    EventType.ORDER_VOIDED: OrderVoided,
     EventType.ORDER_PAID: OrderPaid,
     EventType.LOYALTY_RECORDED: LoyaltyRecorded,
 }

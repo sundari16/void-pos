@@ -22,12 +22,15 @@ import type {
   PlaceOrderRequest,
   TillMenu,
   TillMenuItem,
+  VoidRequest,
+  VoidResponse,
 } from "@/lib/types";
 import { ulid } from "@/lib/ulid";
 import { ItemDialog } from "@/components/ItemDialog";
 import { MenuGrid } from "@/components/MenuGrid";
 import { OrderTicket } from "@/components/OrderTicket";
 import { PairTill } from "@/components/PairTill";
+import { VoidPanel } from "@/components/VoidPanel";
 import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
 const FULFILLMENTS = ["dine_in", "pickup", "delivery"] as const;
@@ -46,6 +49,7 @@ interface Placed {
   state: string;
   kitchen?: KitchenResponse;
   payment?: PaymentResponse;
+  voided?: VoidResponse;
 }
 
 export default function PosPage() {
@@ -60,7 +64,7 @@ export default function PosPage() {
   const [dialogItem, setDialogItem] = useState<TillMenuItem | null>(null);
 
   const [placed, setPlaced] = useState<Placed | null>(null);
-  const [busy, setBusy] = useState<null | "place" | "kitchen" | "pay">(null);
+  const [busy, setBusy] = useState<null | "place" | "kitchen" | "pay" | "void">(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [cardOpen, setCardOpen] = useState(false);
   const [cardRef, setCardRef] = useState("");
@@ -70,6 +74,7 @@ export default function PosPage() {
   const pendingPlace = useRef<PlaceOrderRequest | null>(null);
   const pendingKitchen = useRef<CommandIn | null>(null);
   const pendingPay = useRef<PayRequest | null>(null);
+  const pendingVoid = useRef<VoidRequest | null>(null);
 
   const token = till?.token;
   const locationId = till?.locationId;
@@ -227,10 +232,30 @@ export default function PosPage() {
     void pay("external", checked.ref);
   }
 
+  /** Void the placed order. A retry resends the first attempt, reason and all. */
+  async function voidOrder(reason: string) {
+    if (!till || !placed) return;
+    setBusy("void");
+    setActionError(null);
+    try {
+      const voided = await send(
+        pendingVoid,
+        (): VoidRequest => ({ ...command(), reason }),
+        (body) => api.voidOrder(till.token, placed.order.id, body),
+      );
+      setPlaced({ ...placed, state: voided.state, voided });
+    } catch (err) {
+      setActionError(friendlyError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function newOrder() {
     pendingPlace.current = null;
     pendingKitchen.current = null;
     pendingPay.current = null;
+    pendingVoid.current = null;
     setCardOpen(false);
     setCardRef("");
     setDraft([]);
@@ -319,6 +344,17 @@ export default function PosPage() {
             {actionError && (
               <p className="rounded-lg border border-red-300 bg-red-50 p-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
                 {actionError}
+              </p>
+            )}
+
+            {placed?.voided && (
+              <p className="rounded-lg border border-red-300 bg-red-50 p-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                Voided.{" "}
+                {placed.voided.printed
+                  ? "A void ticket went to the kitchen."
+                  : placed.kitchen
+                    ? "No void ticket printed: tell the kitchen."
+                    : ""}
               </p>
             )}
 
@@ -432,6 +468,15 @@ export default function PosPage() {
                     </button>
                   </div>
                 )}
+                {!placed.payment &&
+                  !pendingPay.current &&
+                  (placed.state === "open" || placed.state === "sent") && (
+                    <VoidPanel
+                      busy={busy === "void"}
+                      retrying={pendingVoid.current !== null}
+                      onVoid={voidOrder}
+                    />
+                  )}
                 <button
                   onClick={newOrder}
                   className="w-full rounded-xl px-4 py-2 text-sm font-medium text-muted hover:bg-background"

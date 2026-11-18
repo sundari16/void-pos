@@ -13,7 +13,7 @@ from ..commands import Command
 from ..devices import get_location
 from ..export import export_csv, export_location
 from ..models import Order
-from ..orders import get_order, place_order, send_to_kitchen
+from ..orders import get_order, place_order, send_to_kitchen, void_order
 from ..payments import CashProvider, ExternalProvider, PaymentProvider, order_total_cents, pay_order
 from ..printing import Printer, Rasterizer
 from ..reporting import shift_closeout
@@ -32,6 +32,8 @@ from .schemas import (
     PullResponse,
     PushRequest,
     PushResponse,
+    VoidRequest,
+    VoidResponse,
 )
 
 router = APIRouter()
@@ -87,6 +89,33 @@ def send_to_kitchen_route(
         state=outcome.order.state,
         printed=outcome.printed,
         ticket_bytes=outcome.ticket_bytes,
+        replayed=outcome.replayed,
+    )
+
+
+@router.post("/orders/{order_id}/void", response_model=VoidResponse, tags=["orders"])
+def void_route(
+    order_id: str,
+    body: VoidRequest,
+    session: SessionDep,
+    device: DeviceDep,
+    printer: PrinterDep,
+    rasterizer: RasterizerDep,
+) -> VoidResponse:
+    outcome = void_order(
+        session,
+        device,
+        order_id,
+        _command(body),
+        reason=body.reason,
+        printer=printer,
+        rasterizer=rasterizer,
+    )
+    session.commit()
+    return VoidResponse(
+        order_id=order_id,
+        state=outcome.order.state,
+        printed=outcome.printed,
         replayed=outcome.replayed,
     )
 

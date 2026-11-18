@@ -22,9 +22,12 @@ class KitchenTicket:
     fulfillment: str
     business_date: date
     lines: list[TicketLine]
+    void_reason: str | None = None  # set: this ticket cancels the order in the kitchen
 
 
-def build_kitchen_ticket(order: Order, lines: Iterable[OrderLine]) -> KitchenTicket:
+def build_kitchen_ticket(
+    order: Order, lines: Iterable[OrderLine], *, void_reason: str | None = None
+) -> KitchenTicket:
     """Group modifier child lines under their parent item, preferring the kitchen-facing
     name (any script) over the customer-facing one."""
     children: dict[str, list[OrderLine]] = defaultdict(list)
@@ -59,4 +62,5 @@ def build_kitchen_ticket(order: Order, lines: Iterable[OrderLine]) -> KitchenTic
         fulfillment=order.fulfillment,
         business_date=order.business_date,
         lines=ticket_lines,
+        void_reason=void_reason,
     )
