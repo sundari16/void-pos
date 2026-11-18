@@ -17,7 +17,8 @@ from ..clock import as_aware
 from ..events.payloads import CURRENCY_PATTERN, MAX_LINE_CENTS, OrderPlaced
 from ..ids import Ulid
 from ..menu.service import TillMenu
-from ..models import Device, Location, MenuChange
+from ..models import Device, Location, MenuChange, OrderLine, Payment
+from ..orders.views import OrderView
 
 # --- till commands ----------------------------------------------------------------
 
@@ -35,14 +36,108 @@ class PlaceOrderRequest(CommandIn, OrderPlaced):
     business_date: date | None = None  # default: today in the location's timezone
 
 
-class OrderResponse(BaseModel):
+class OrderLineOut(BaseModel):
+    id: str
+    parent_line_id: str | None
+    menu_item_id: str | None
+    modifier_id: str | None
+    quantity: int
+    name: str
+    kitchen_name: str | None
+    unit_price_cents: int
+    tax_rate: float
+    category: str | None
+    seat_number: int | None
+    course_number: int | None
+    sent: bool  # the kitchen has it
+
+    @classmethod
+    def of(cls, line: OrderLine) -> OrderLineOut:
+        return cls(
+            id=line.id,
+            parent_line_id=line.parent_line_id,
+            menu_item_id=line.menu_item_id,
+            modifier_id=line.modifier_id,
+            quantity=line.quantity,
+            name=line.name_snapshot,
+            kitchen_name=line.kitchen_name_snapshot,
+            unit_price_cents=line.unit_price_cents,
+            tax_rate=float(line.tax_rate_snapshot),
+            category=line.category_snapshot,
+            seat_number=line.seat_number,
+            course_number=line.course_number,
+            sent=line.sent_at is not None,
+        )
+
+
+class PaymentOut(BaseModel):
+    payment_id: str
+    provider: str
+    external_ref: str | None
+    amount_cents: int
+    currency: str
+    status: str
+
+    @classmethod
+    def of(cls, payment: Payment) -> PaymentOut:
+        return cls(
+            payment_id=payment.id,
+            provider=payment.provider,
+            external_ref=payment.external_ref,
+            amount_cents=payment.amount_cents,
+            currency=payment.currency,
+            status=payment.status,
+        )
+
+
+class OrderSummary(BaseModel):
+    """An order in a list: enough to find the table and see what's owing."""
+
     id: str
     order_number: int
     state: str
+    fulfillment: str
+    table_label: str | None
     business_date: date
+    created_at: datetime
     total_cents: int
+    gst_cents: int
     balance_cents: int
+    unsent_lines: int  # lines the kitchen hasn't had yet
+
+    @classmethod
+    def of(cls, view: OrderView) -> OrderSummary:
+        o = view.order
+        return cls(
+            id=o.id,
+            order_number=o.order_number,
+            state=o.state,
+            fulfillment=o.fulfillment,
+            table_label=o.table_label,
+            business_date=o.business_date,
+            created_at=as_aware(o.created_at),
+            total_cents=view.total_cents,
+            gst_cents=view.gst_cents,
+            balance_cents=view.balance_cents,
+            unsent_lines=view.unsent_lines,
+        )
+
+
+class OrderResponse(OrderSummary):
+    """The whole order, as a till needs it to carry on with it."""
+
+    lines: list[OrderLineOut]
+    payments: list[PaymentOut]
     replayed: bool = False
+
+    @classmethod
+    def of_view(cls, view: OrderView, *, replayed: bool = False) -> OrderResponse:
+        return cls(
+            **OrderSummary.of(view).model_dump(),
+            lines=[OrderLineOut.of(line) for line in view.lines],
+            payments=[PaymentOut.of(p) for p in view.payments],
+            replayed=replayed,
+        )
 
 
 class KitchenRequest(CommandIn):

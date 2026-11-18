@@ -184,6 +184,7 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
             business_date=event.business_date,
             channel=p["channel"],
             fulfillment=p["fulfillment"],
+            table_label=p.get("table_label"),
             state="open",
         )
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
@@ -13,13 +13,20 @@ from ..commands import Command
 from ..devices import get_location
 from ..export import export_csv, export_location
 from ..models import Order
-from ..orders import get_order, place_order, send_to_kitchen, void_order
+from ..orders import (
+    UNSETTLED,
+    get_order,
+    list_orders,
+    order_view,
+    order_views,
+    place_order,
+    send_to_kitchen,
+    void_order,
+)
 from ..payments import (
     CashProvider,
     ExternalProvider,
     PaymentProvider,
-    balance_cents,
-    order_total_cents,
     pay_order,
 )
 from ..printing import Printer, Rasterizer
@@ -34,6 +41,7 @@ from .schemas import (
     KitchenRequest,
     KitchenResponse,
     OrderResponse,
+    OrderSummary,
     PaymentResponse,
     PayRequest,
     PlaceOrderRequest,
@@ -49,6 +57,7 @@ router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session)]
 PrinterDep = Annotated[Printer | None, Depends(get_printer)]
 RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
+OrderState = Literal["open", "sent", "paid", "voided"]
 
 
 def _command(body: CommandIn) -> Command:
@@ -56,15 +65,7 @@ def _command(body: CommandIn) -> Command:
 
 
 def _order_response(session: Session, order: Order, *, replayed: bool) -> OrderResponse:
-    return OrderResponse(
-        id=order.id,
-        order_number=order.order_number,
-        state=order.state,
-        business_date=order.business_date,
-        total_cents=order_total_cents(session, order.id),
-        balance_cents=balance_cents(session, order.id),
-        replayed=replayed,
-    )
+    return OrderResponse.of_view(order_view(session, order), replayed=replayed)
 
 
 @router.post("/orders", response_model=OrderResponse, tags=["orders"])
@@ -72,6 +73,30 @@ def place_order_route(req: PlaceOrderRequest, session: SessionDep, device: Devic
     outcome = place_order(session, device, _command(req), req, business_date=req.business_date)
     session.commit()
     return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.get(
+    "/locations/{location_id}/orders", response_model=list[OrderSummary], tags=["orders"]
+)
+def read_orders(
+    location_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+    state: Annotated[list[OrderState] | None, Query()] = None,
+    business_date: date | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> list[OrderSummary]:
+    """A location's orders, newest first: by default the unsettled ones (open or sent,
+    whatever the date), so a till can pick a table back up."""
+    principal.require_location(location_id)
+    orders = list_orders(
+        session,
+        location_id,
+        states=state or UNSETTLED,
+        business_date=business_date,
+        limit=limit,
+    )
+    return [OrderSummary.of(view) for view in order_views(session, orders)]
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse, tags=["orders"])

@@ -11,12 +11,18 @@ from .service import (
     send_to_kitchen,
     void_order,
 )
+from .views import UNSETTLED, OrderView, list_orders, order_view, order_views
 
 __all__ = [
+    "UNSETTLED",
     "KitchenOutcome",
     "OrderOutcome",
+    "OrderView",
     "VoidOutcome",
     "get_order",
+    "list_orders",
+    "order_view",
+    "order_views",
     "place_order",
     "send_to_kitchen",
     "void_order",

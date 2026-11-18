@@ -75,6 +75,7 @@ class OrderPlaced(_Payload):
     channel: Channel
     fulfillment: Fulfillment
     customer_id: Ulid | None = None
+    table_label: str | None = Field(default=None, min_length=1, max_length=40)  # "12", "Patio 3"
     lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
