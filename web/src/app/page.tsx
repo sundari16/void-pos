@@ -5,7 +5,7 @@ import { api, ApiError } from "@/lib/api";
 import { friendlyError, runCommand, type Pending } from "@/lib/commands";
 import { groupsFor, localClock, type ChosenModifier } from "@/lib/menu";
 import { formatCents } from "@/lib/money";
-import { providerLabel, terminalRef, type PayMethod } from "@/lib/payments";
+import { providerLabel, type PayMethod } from "@/lib/payments";
 import {
   draftItemFrom,
   orderLineCount,
@@ -30,6 +30,7 @@ import { ItemDialog } from "@/components/ItemDialog";
 import { MenuGrid } from "@/components/MenuGrid";
 import { OrderTicket } from "@/components/OrderTicket";
 import { PairTill } from "@/components/PairTill";
+import { PaymentPanel } from "@/components/PaymentPanel";
 import { VoidPanel } from "@/components/VoidPanel";
 import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
@@ -48,7 +49,8 @@ interface Placed {
   order: OrderResponse;
   state: string;
   kitchen?: KitchenResponse;
-  payment?: PaymentResponse;
+  payments: PaymentResponse[];
+  balance: number;
   voided?: VoidResponse;
 }
 
@@ -66,8 +68,6 @@ export default function PosPage() {
   const [placed, setPlaced] = useState<Placed | null>(null);
   const [busy, setBusy] = useState<null | "place" | "kitchen" | "pay" | "void">(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [cardOpen, setCardOpen] = useState(false);
-  const [cardRef, setCardRef] = useState("");
 
   // A command's body (and so its ids) lives here until the server answers, so tapping
   // again after a dropped connection resends the same ids and can't duplicate anything.
@@ -171,7 +171,7 @@ export default function PosPage() {
             : null;
         },
       );
-      setPlaced({ order, state: order.state });
+      setPlaced({ order, state: order.state, payments: [], balance: order.balance_cents });
     } catch (err) {
       setActionError(friendlyError(err));
       if (err instanceof ApiError && STALE_MENU.has(err.code)) void loadMenu();
@@ -198,7 +198,7 @@ export default function PosPage() {
 
   /** Pay the order. An unconfirmed earlier attempt is always resent as it was, whichever
    *  button is pressed, so a dropped connection can't turn into a second charge. */
-  async function pay(method: PayMethod, externalRef?: string) {
+  async function pay(method: PayMethod, amountCents: number, externalRef?: string) {
     if (!till || !placed) return;
     setBusy("pay");
     setActionError(null);
@@ -209,27 +209,23 @@ export default function PosPage() {
           ...command(),
           payment_id: ulid(),
           method,
+          amount_cents: amountCents,
           external_ref: method === "external" ? externalRef : null,
         }),
         (body) => api.payOrder(till.token, placed.order.id, body),
       );
-      setPlaced({ ...placed, state: payment.order_state, payment });
-      setCardOpen(false);
-      setCardRef("");
+      const seen = placed.payments.some((p) => p.payment_id === payment.payment_id);
+      setPlaced({
+        ...placed,
+        state: payment.order_state,
+        payments: seen ? placed.payments : [...placed.payments, payment],
+        balance: payment.balance_cents,
+      });
     } catch (err) {
       setActionError(friendlyError(err));
     } finally {
       setBusy(null);
     }
-  }
-
-  function payByCard() {
-    const checked = terminalRef(cardRef);
-    if ("error" in checked) {
-      setActionError(checked.error);
-      return;
-    }
-    void pay("external", checked.ref);
   }
 
   /** Void the placed order. A retry resends the first attempt, reason and all. */
@@ -256,8 +252,6 @@ export default function PosPage() {
     pendingKitchen.current = null;
     pendingPay.current = null;
     pendingVoid.current = null;
-    setCardOpen(false);
-    setCardRef("");
     setDraft([]);
     setPlaced(null);
     setActionError(null);
@@ -358,11 +352,17 @@ export default function PosPage() {
               </p>
             )}
 
-            {placed?.payment && (
-              <p className="rounded-lg border border-emerald-300 bg-emerald-50 p-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
-                Paid {formatCents(placed.payment.amount_cents)} ·{" "}
-                {providerLabel(placed.payment.provider)} · {placed.payment.status}
-              </p>
+            {placed && placed.payments.length > 0 && (
+              <ul className="space-y-0.5 rounded-lg border border-emerald-300 bg-emerald-50 p-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                {placed.payments.map((p) => (
+                  <li key={p.payment_id}>
+                    Paid {formatCents(p.amount_cents)} · {providerLabel(p.provider)}
+                  </li>
+                ))}
+                <li className="font-semibold">
+                  {placed.balance > 0 ? `${formatCents(placed.balance)} still owing` : "Paid in full"}
+                </li>
+              </ul>
             )}
             {placed?.kitchen && (
               <p className="text-xs text-muted">
@@ -392,83 +392,15 @@ export default function PosPage() {
                   {busy === "kitchen" ? "Sending…" : placed.kitchen ? "Sent ✓" : "Send to kitchen"}
                 </button>
 
-                {placed.payment ? null : pendingPay.current ? (
-                  <button
-                    onClick={() => pay(pendingPay.current?.method ?? "cash")}
-                    disabled={busy !== null}
-                    className="w-full rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
-                  >
-                    {busy === "pay"
-                      ? "Paying…"
-                      : `Retry ${pendingPay.current.method === "external" ? "card" : "cash"} payment`}
-                  </button>
-                ) : cardOpen ? (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      payByCard();
-                    }}
-                    className="space-y-2 rounded-xl border border-border p-3"
-                  >
-                    <label htmlFor="card-ref" className="block text-sm font-medium">
-                      Terminal receipt or approval number
-                    </label>
-                    <input
-                      id="card-ref"
-                      value={cardRef}
-                      onChange={(e) => setCardRef(e.target.value)}
-                      autoFocus
-                      autoComplete="off"
-                      inputMode="text"
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="submit"
-                        disabled={busy !== null || !cardRef.trim()}
-                        className="rounded-xl bg-accent px-4 py-2.5 font-semibold text-white disabled:opacity-40"
-                      >
-                        {busy === "pay" ? "Recording…" : "Record card payment"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCardOpen(false);
-                          setCardRef("");
-                        }}
-                        disabled={busy !== null}
-                        className="rounded-xl border border-border px-4 py-2.5 font-medium hover:bg-background"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => pay("cash")}
-                      disabled={
-                        (placed.state !== "open" && placed.state !== "sent") || busy !== null
-                      }
-                      className="rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
-                    >
-                      {busy === "pay" ? "Paying…" : "Pay cash"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setActionError(null);
-                        setCardOpen(true);
-                      }}
-                      disabled={
-                        (placed.state !== "open" && placed.state !== "sent") || busy !== null
-                      }
-                      className="rounded-xl border border-accent px-4 py-3 font-semibold text-accent disabled:opacity-40"
-                    >
-                      Card on terminal
-                    </button>
-                  </div>
+                {(placed.state === "open" || placed.state === "sent") && !pendingVoid.current && (
+                  <PaymentPanel
+                    balanceCents={placed.balance}
+                    busy={busy === "pay"}
+                    retryMethod={pendingPay.current?.method ?? null}
+                    onPay={(method, amount, ref) => void pay(method, amount, ref)}
+                  />
                 )}
-                {!placed.payment &&
+                {placed.payments.length === 0 &&
                   !pendingPay.current &&
                   (placed.state === "open" || placed.state === "sent") && (
                     <VoidPanel

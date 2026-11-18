@@ -104,8 +104,8 @@ describe("errors", () => {
 
   it("explains known codes and passes the server's words through otherwise", () => {
     expect(friendlyError(new ApiError(503, "printer_unavailable", "x"))).toMatch(/printer/);
-    expect(friendlyError(new ApiError(422, "amount_mismatch", "must cover 3700"))).toBe(
-      "must cover 3700",
+    expect(friendlyError(new ApiError(422, "amount_exceeds_balance", "more than owing"))).toBe(
+      "more than owing",
     );
   });
 });

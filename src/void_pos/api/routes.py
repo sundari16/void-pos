@@ -14,7 +14,14 @@ from ..devices import get_location
 from ..export import export_csv, export_location
 from ..models import Order
 from ..orders import get_order, place_order, send_to_kitchen, void_order
-from ..payments import CashProvider, ExternalProvider, PaymentProvider, order_total_cents, pay_order
+from ..payments import (
+    CashProvider,
+    ExternalProvider,
+    PaymentProvider,
+    balance_cents,
+    order_total_cents,
+    pay_order,
+)
 from ..printing import Printer, Rasterizer
 from ..reporting import shift_closeout
 from ..sync import MAX_PULL, pull_events, push_events
@@ -54,6 +61,7 @@ def _order_response(session: Session, order: Order, *, replayed: bool) -> OrderR
         state=order.state,
         business_date=order.business_date,
         total_cents=order_total_cents(session, order.id),
+        balance_cents=balance_cents(session, order.id),
         replayed=replayed,
     )
 
@@ -149,6 +157,7 @@ def pay_route(
         currency=payment.currency,
         status=payment.status,
         order_state=outcome.order.state,
+        balance_cents=outcome.balance_cents,
         replayed=outcome.replayed,
     )
 

@@ -24,3 +24,25 @@ export function terminalRef(input: string): { ref: string } | { error: string } 
   if (ref.length > MAX_TERMINAL_REF) return { error: "That reference is too long." };
   return { ref };
 }
+
+/** Shares of `totalCents` split `ways` ways, in whole cents: the first shares take the
+ *  odd cents, so $10.00 three ways is 3.34, 3.33, 3.33. */
+export function evenSplit(totalCents: number, ways: number): number[] {
+  const n = Math.max(1, Math.floor(ways));
+  const base = Math.floor(totalCents / n);
+  const extra = totalCents - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0));
+}
+
+/** A dollar amount typed by the cashier, in cents, or an error to show. */
+export function parseDollars(input: string): { cents: number } | { error: string } {
+  const text = input.trim().replace(/^\$/, "").replace(/,/g, "");
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return { error: "Enter an amount like 12.50." };
+  const [whole, frac = ""] = text.split(".");
+  return { cents: Number(whole) * 100 + Number(frac.padEnd(2, "0")) };
+}
+
+/** Cents as the plain number a cashier types, e.g. 1250 -> "12.50". */
+export function centsToInput(cents: number): string {
+  return (cents / 100).toFixed(2);
+}

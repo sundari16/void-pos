@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
@@ -17,6 +18,7 @@ from void_pos.payments import (
     ChargeRequest,
     ChargeResult,
     ExternalProvider,
+    balance_cents,
     order_total_cents,
     pay_order,
 )
@@ -167,16 +169,76 @@ def test_paying_a_paid_order_is_refused_before_charging() -> None:
         assert exc.value.code == "order_closed"
 
 
-def test_amount_must_match_the_total() -> None:
+def test_a_split_bill_is_paid_once_its_payments_cover_the_total() -> None:
+    with _session() as s:
+        device, order_id = _place(s)  # 3700
+
+        def pay(seq: int, amount: int | None, provider: Any = None) -> Any:
+            return pay_order(
+                s,
+                device,
+                order_id,
+                provider or CashProvider(),
+                _cmd(seq),
+                payment_id=new_ulid(),
+                amount_cents=amount,
+            )
+
+        first = pay(2, 1000)
+        assert (first.balance_cents, first.order.state) == (2700, "open")
+        second = pay(3, 1500, ExternalProvider(external_ref="EFTPOS 4471"))
+        assert (second.balance_cents, second.order.state) == (1200, "open")
+        assert balance_cents(s, order_id) == 1200
+
+        with pytest.raises(InvalidRequest) as over:
+            pay(4, 2000)
+        assert (over.value.code, over.value.extra["balance_cents"]) == ("amount_exceeds_balance", 1200)
+        with pytest.raises(InvalidRequest) as zero:
+            pay(4, 0)
+        assert zero.value.code == "invalid_amount"
+
+        last = pay(4, None)  # the rest
+        assert (last.payment.amount_cents, last.balance_cents, last.order.state) == (1200, 0, "paid")
+        with pytest.raises(Conflict) as closed:
+            pay(5, None)
+        assert closed.value.code == "order_closed"
+        assert s.scalar(select(func.count()).select_from(Payment)) == 3
+
+
+def test_a_free_order_can_be_settled_with_nothing() -> None:
+    with _session() as s:
+        device, order_id = _place(s, quantity=1, price=0)
+        outcome = pay_order(s, device, order_id, CashProvider(), _cmd(2), payment_id=new_ulid())
+        assert (outcome.payment.amount_cents, outcome.order.state) == (0, "paid")
+
+
+def test_synced_part_payments_settle_the_order_when_they_cover_it() -> None:
     with _session() as s:
         device, order_id = _place(s)
-        with pytest.raises(InvalidRequest) as exc:
-            pay_order(
-                s, device, order_id, CashProvider(), _cmd(2), payment_id=new_ulid(), amount_cents=100
+
+        def paid(seq: int, amount: int) -> str:
+            result = ingest_event(
+                s,
+                {
+                    "event_id": new_ulid(),
+                    "device_id": device.id,
+                    "seq": seq,
+                    "location_id": device.location_id,
+                    "business_date": TODAY,
+                    "occurred_at": T0,
+                    "type": "order.paid",
+                    "payload": {
+                        "order_id": order_id,
+                        "payment": {"id": new_ulid(), "provider": "cash", "amount_cents": amount},
+                    },
+                },
             )
-        assert exc.value.code == "amount_mismatch"
-        assert exc.value.extra["total_cents"] == 3700
+            return result.detail or result.status
+
+        assert paid(2, 2000) == "part payment; 1700 cents owing"
         assert s.get(Order, order_id).state == "open"
+        paid(3, 1700)
+        assert s.get(Order, order_id).state == "paid"
 
 
 def test_failed_charge_records_nothing() -> None:

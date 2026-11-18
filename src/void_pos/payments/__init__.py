@@ -7,9 +7,10 @@ module that implements ``PaymentProvider`` — they are deliberately not in this
 
 from __future__ import annotations
 
+from ..balance import balance_cents, captured_cents, order_total_cents
 from .provider import ChargeRequest, ChargeResult, PaymentError, PaymentProvider
 from .providers import CashProvider, ExternalProvider
-from .service import PaymentOutcome, order_total_cents, pay_order
+from .service import PaymentOutcome, pay_order
 
 __all__ = [
     "CashProvider",
@@ -19,6 +20,8 @@ __all__ = [
     "PaymentError",
     "PaymentOutcome",
     "PaymentProvider",
+    "balance_cents",
+    "captured_cents",
     "order_total_cents",
     "pay_order",
 ]

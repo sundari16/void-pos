@@ -198,15 +198,39 @@ def test_paying_twice_is_refused(ctx: Ctx) -> None:
     assert (r.status_code, r.json()["code"], r.json()["order_state"]) == (409, "order_closed", "paid")
 
 
-def test_underpaying_is_refused_with_the_total(ctx: Ctx) -> None:
+def test_a_bill_split_two_ways_over_the_api(ctx: Ctx) -> None:
     c, venue, _, _ = ctx
     order = _place(c, venue)
-    r = c.post(
-        f"/orders/{order['id']}/pay",
-        json={**cmd(2), "payment_id": new_ulid(), "amount_cents": 1000},
-        headers=auth(venue.token),
+    url = f"/orders/{order['id']}/pay"
+    till = auth(venue.token)
+
+    half = c.post(url, json={**cmd(2), "payment_id": new_ulid(), "amount_cents": 1850}, headers=till)
+    assert half.status_code == 200, half.text
+    assert (half.json()["order_state"], half.json()["balance_cents"]) == ("open", 1850)
+    read = c.get(f"/orders/{order['id']}", headers=till).json()
+    assert (read["total_cents"], read["balance_cents"]) == (3700, 1850)
+
+    void = c.post(f"/orders/{order['id']}/void", json={**cmd(3), "reason": "Left"}, headers=till)
+    assert (void.status_code, void.json()["code"]) == (409, "order_paid")
+
+    over = c.post(url, json={**cmd(3), "payment_id": new_ulid(), "amount_cents": 2000}, headers=till)
+    assert (over.status_code, over.json()["code"], over.json()["balance_cents"]) == (
+        422,
+        "amount_exceeds_balance",
+        1850,
     )
-    assert (r.status_code, r.json()["code"], r.json()["total_cents"]) == (422, "amount_mismatch", 3700)
+    rest = c.post(
+        url,
+        json={**cmd(3), "payment_id": new_ulid(), "method": "external", "external_ref": "4471"},
+        headers=till,
+    )
+    assert (rest.json()["amount_cents"], rest.json()["order_state"], rest.json()["balance_cents"]) == (
+        1850,
+        "paid",
+        0,
+    )
+    report = c.get(f"/reports/{venue.location_id}/closeout", headers=till).json()
+    assert report["payments_by_provider"] == {"cash": 1850, "external": 1850}
 
 
 def test_external_payments_need_a_reference(ctx: Ctx) -> None:

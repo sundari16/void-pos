@@ -41,6 +41,7 @@ class OrderResponse(BaseModel):
     state: str
     business_date: date
     total_cents: int
+    balance_cents: int
     replayed: bool = False
 
 
@@ -71,7 +72,7 @@ class PayRequest(CommandIn):
     payment_id: Ulid
     method: Literal["cash", "external"] = "cash"
     external_ref: str | None = Field(default=None, min_length=1, max_length=200)
-    amount_cents: int | None = Field(default=None, ge=0)  # default: the order total
+    amount_cents: int | None = Field(default=None, ge=0)  # default: all that is owing
     currency: str = Field(default="AUD", pattern=CURRENCY_PATTERN)
 
     @model_validator(mode="after")
@@ -89,6 +90,7 @@ class PaymentResponse(BaseModel):
     currency: str
     status: str
     order_state: str
+    balance_cents: int  # still owing; the order is paid when this reaches 0
     replayed: bool = False
 
 

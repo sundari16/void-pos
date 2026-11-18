@@ -89,6 +89,7 @@ export interface OrderResponse {
   state: string;
   business_date: string;
   total_cents: number;
+  balance_cents: number;
   replayed: boolean;
 }
 
@@ -127,6 +128,8 @@ export interface PaymentResponse {
   currency: string;
   status: string;
   order_state: string;
+  /** Still owing after this payment; the order is paid at 0. */
+  balance_cents: number;
   replayed: boolean;
 }
 
