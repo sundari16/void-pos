@@ -30,9 +30,23 @@ changing models, keep all six:
 ## Layout
 
 - `src/void_pos/models/` — SQLAlchemy 2.0 models (the schema above).
-- `src/void_pos/ids.py` — ULID helpers.
-- `migrations/` — Alembic.
-- `tests/` — pytest; model tests run against sqlite in-memory.
+- `src/void_pos/events/` — `ingest_event`: validate, append, project. Both write paths
+  (till commands in `commands.py`, device sync in `sync/`) go through it.
+- `src/void_pos/api/` — thin HTTP layer: `auth.py` (admin token vs paired till),
+  `errors.py` (one JSON error shape), routes. Business rules live in the services.
+- `src/void_pos/devices/` — locations, tills, pairing; `cli.py` — `void-pos` setup CLI.
+- `src/void_pos/ids.py` — ULID helpers; `clock.py` — UTC storage, location-local dates.
+- `migrations/` — Alembic. Every model change needs a migration; CI runs `alembic check`.
+- `tests/` — pytest on SQLite; `tests/support.py` has the shared helpers.
+  `VOIDPOS_TEST_DATABASE_URL` runs the suite on PostgreSQL.
+- `web/` — Next.js till. `web/src/lib/` is pure and unit tested (`npm test`).
+- `docs/architecture.md` (engineering view), `docs/self-host.md` (venue install).
+
+## Deployment
+
+Self-hosted only until the project is commercial: one venue machine running
+`docker compose` (Postgres, API, web, nightly backups). No GCP; the workspace's Cloud SQL /
+Cloud Build / Terraform defaults don't apply here yet.
 
 ## Money & time
 

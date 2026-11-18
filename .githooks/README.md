@@ -8,7 +8,12 @@ Install (per clone):
 git config core.hooksPath .githooks
 ```
 
-`pre-push` runs `ruff check .` and `pytest -q` before a push that carries Python
-changes. Bypass in emergencies only with `git push --no-verify`.
+`pre-push` checks what the push changes:
 
-The authoritative gate is the PR workflow; this hook just saves a round trip to CI.
+- Python (`*.py`, `pyproject.toml`, `constraints.txt`, `migrations/`): `ruff check .`,
+  `mypy src`, `pytest -q`, and `alembic check` on a scratch SQLite database.
+- `web/`: `npm run typecheck` and `npm test` (needs `npm ci` in `web/` once).
+
+PostgreSQL and the Docker venue stack run only in CI. Bypass in emergencies only with
+`git push --no-verify`. The authoritative gate is the workflow; this hook just saves a
+round trip to CI.

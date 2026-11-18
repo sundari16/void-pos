@@ -30,3 +30,7 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Self-host install: database dumps and mounted fonts stay on the venue machine
+backups/
+fonts/

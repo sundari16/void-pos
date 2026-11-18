@@ -50,7 +50,11 @@ describe("api client", () => {
 });
 
 describe("apiBase", () => {
-  it("defaults to port 8000 on the host serving the page", () => {
-    expect(apiBase({ protocol: "http:", hostname: "192.168.1.20" })).toBe("http://192.168.1.20:8000");
+  it("defaults to the same-origin /api proxy", () => {
+    expect(apiBase("")).toBe("/api");
+  });
+
+  it("honours an explicit API address", () => {
+    expect(apiBase("http://192.168.1.20:8000/")).toBe("http://192.168.1.20:8000");
   });
 });

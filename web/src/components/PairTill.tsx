@@ -75,7 +75,7 @@ export function PairTill() {
       </button>
 
       <p className="text-xs text-muted">
-        Server <span className="font-mono">{apiBase()}</span>
+        Server <span className="font-mono">{new URL(apiBase(), window.location.href).href}</span>
       </p>
     </form>
   );

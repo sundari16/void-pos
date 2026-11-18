@@ -35,8 +35,8 @@ $env:VOIDPOS_DATABASE_URL = "sqlite:///./void_pos_dev.db"
 uvicorn void_pos.main:app
 ```
 
-The API serves on `http://localhost:8000`. CORS already allows `http://localhost:3000`
-(override with `VOIDPOS_CORS_ORIGINS`).
+The API serves on `http://localhost:8000`. The web dev server proxies `/api` to it, so the
+browser never calls the API cross-origin.
 
 ## 2. Run the web app and pair the till
 
@@ -48,8 +48,8 @@ npm run dev                       # http://localhost:3000
 
 Enter the pairing code the seed script printed. The till keeps its token and counters in
 the browser's local storage. Re-run the seed script for a fresh code; each code works once.
-To point the till at an API somewhere other than port 8000 on the same host, set
-`NEXT_PUBLIC_API_BASE` in `web/.env.local` (see `.env.example`).
+If the API isn't on `http://localhost:8000`, set `VOIDPOS_API_URL` in `web/.env.local`
+(see `.env.example`).
 
 ## Flow
 
