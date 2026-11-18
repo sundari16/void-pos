@@ -18,6 +18,7 @@ from ..devices import (
     register_device,
     revoke_device,
 )
+from ..receipts import update_venue
 from ..staff import create_staff, deactivate_staff, list_staff, set_pin
 from .auth import AdminDep
 from .deps import get_session
@@ -31,6 +32,7 @@ from .schemas import (
     PinIn,
     StaffIn,
     StaffOut,
+    VenueDetailsIn,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -48,6 +50,16 @@ def add_location(body: LocationIn, session: SessionDep, _: AdminDep) -> Location
     location = create_location(
         session, org_name=body.org_name, name=body.name, timezone=body.timezone
     )
+    session.commit()
+    return LocationOut.model_validate(location)
+
+
+@router.patch("/locations/{location_id}", response_model=LocationOut)
+def set_venue_details(
+    location_id: str, body: VenueDetailsIn, session: SessionDep, _: AdminDep
+) -> LocationOut:
+    """The name, ABN, address, phone and footer customer receipts show."""
+    location = update_venue(session, location_id, body.model_dump(exclude_unset=True))
     session.commit()
     return LocationOut.model_validate(location)
 

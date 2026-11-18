@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import date
 from typing import Annotated, Any, Literal
 
@@ -10,7 +11,9 @@ from sqlalchemy.orm import Session
 
 from ..clock import local_date
 from ..commands import Command
+from ..config import Settings, get_settings
 from ..devices import get_location
+from ..errors import ServiceUnavailable
 from ..export import export_csv, export_location
 from ..models import Order
 from ..orders import (
@@ -31,11 +34,12 @@ from ..payments import (
     pay_order,
 )
 from ..printing import Printer, Rasterizer
+from ..receipts import build_receipt, encode_receipt
 from ..reporting import shift_closeout
 from ..sync import MAX_PULL, pull_events, push_events
 from .approval import PinLimiterDep, approve
 from .auth import AdminDep, DeviceDep, PrincipalDep
-from .deps import get_printer, get_rasterizer, get_session
+from .deps import get_printer, get_rasterizer, get_receipt_printer, get_session
 from .schemas import (
     Ack,
     AddLinesRequest,
@@ -50,6 +54,8 @@ from .schemas import (
     PullResponse,
     PushRequest,
     PushResponse,
+    ReceiptOut,
+    ReceiptPrinted,
     VoidRequest,
     VoidResponse,
 )
@@ -59,6 +65,7 @@ router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session)]
 PrinterDep = Annotated[Printer | None, Depends(get_printer)]
 RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
+ReceiptPrinterDep = Annotated[Printer | None, Depends(get_receipt_printer)]
 OrderState = Literal["open", "sent", "paid", "voided"]
 
 
@@ -109,6 +116,39 @@ def add_lines_route(
     outcome = add_lines(session, device, order_id, _command(body), body.lines)
     session.commit()
     return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.get("/orders/{order_id}/receipt", response_model=ReceiptOut, tags=["orders"])
+def read_receipt(order_id: str, session: SessionDep, principal: PrincipalDep) -> ReceiptOut:
+    """The customer receipt (a tax invoice once the venue has an ABN), to show or print."""
+    order = get_order(session, order_id, location_id=principal.location_id)
+    receipt = build_receipt(session, order_view(session, order))
+    return ReceiptOut.model_validate(asdict(receipt))
+
+
+@router.post("/orders/{order_id}/print-receipt", response_model=ReceiptPrinted, tags=["orders"])
+def print_receipt(
+    order_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+    printer: ReceiptPrinterDep,
+    rasterizer: RasterizerDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ReceiptPrinted:
+    """Print the customer receipt on the receipt printer. Nothing is recorded, so it can
+    be printed again as often as needed."""
+    order = get_order(session, order_id, location_id=principal.location_id)
+    if printer is None:
+        raise ServiceUnavailable(
+            "no receipt printer is set up; show the receipt on screen instead",
+            code="no_receipt_printer",
+        )
+    receipt = build_receipt(session, order_view(session, order))
+    data = encode_receipt(
+        receipt, columns=settings.receipt_printer_columns, rasterizer=rasterizer
+    )
+    printer.send(data)
+    return ReceiptPrinted(printed=True, ticket_bytes=len(data))
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse, tags=["orders"])

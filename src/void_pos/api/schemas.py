@@ -497,6 +497,59 @@ class LocationOut(BaseModel):
     org_id: str
     name: str
     timezone: str
+    business_name: str | None = None
+    abn: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    receipt_footer: str | None = None
+
+
+class VenueDetailsIn(BaseModel):
+    """What customer receipts show. A blank value clears it; an ABN makes receipts tax
+    invoices."""
+
+    business_name: str | None = Field(default=None, max_length=200)
+    abn: str | None = Field(default=None, max_length=20)
+    address: str | None = Field(default=None, max_length=300)
+    phone: str | None = Field(default=None, max_length=40)
+    receipt_footer: str | None = Field(default=None, max_length=300)
+
+
+class ReceiptLineOut(BaseModel):
+    quantity: int
+    name: str
+    amount_cents: int
+    is_modifier: bool
+
+
+class ReceiptPaymentOut(BaseModel):
+    label: str
+    amount_cents: int
+    reference: str | None
+
+
+class ReceiptOut(BaseModel):
+    title: str
+    venue_name: str
+    address: str | None
+    phone: str | None
+    abn: str | None
+    order_number: int
+    table_label: str | None
+    ordered_at: str
+    printed_at: str
+    lines: list[ReceiptLineOut]
+    total_cents: int
+    gst_cents: int
+    payments: list[ReceiptPaymentOut]
+    balance_cents: int
+    voided: bool
+    footer: str | None
+
+
+class ReceiptPrinted(BaseModel):
+    printed: bool
+    ticket_bytes: int
 
 
 class DeviceIn(BaseModel):

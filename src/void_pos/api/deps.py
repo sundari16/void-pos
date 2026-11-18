@@ -29,3 +29,10 @@ def get_rasterizer(settings: Annotated[Settings, Depends(get_settings)]) -> Rast
     if settings.kitchen_font_path:
         return PillowRasterizer(settings.kitchen_font_path)
     return None
+
+
+def get_receipt_printer(settings: Annotated[Settings, Depends(get_settings)]) -> Printer | None:
+    """The customer receipt printer, or None when none is configured."""
+    if settings.receipt_printer_host:
+        return NetworkPrinter(settings.receipt_printer_host, settings.receipt_printer_port)
+    return None

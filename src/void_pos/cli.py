@@ -6,6 +6,7 @@
     void-pos import-menu --location <id> --file menu.csv [--dry-run]
     void-pos import-modifiers --location <id> --file modifiers.csv [--dry-run]
     void-pos add-staff --location <id> --name "Asha" --role manager   (asks for the PIN)
+    void-pos venue-details --location <id> --abn "51 824 753 556" --address "..."
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -50,6 +51,7 @@ from .printing import (
     encode_ticket,
     needs_image,
 )
+from .receipts import format_abn, update_venue
 from .staff import create_staff, deactivate_staff, list_staff
 
 TEST_LINES = ("Print test", "மசாலா தோசை")  # Masala Dosa in Tamil: checks the font path
@@ -97,6 +99,14 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--location", required=True)
     imp.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
     imp.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+
+    venue = sub.add_parser("venue-details", help="set what customer receipts show")
+    venue.add_argument("--location", required=True)
+    venue.add_argument("--business-name", help="defaults to the location's name")
+    venue.add_argument("--abn", help="11 digits; receipts become tax invoices")
+    venue.add_argument("--address")
+    venue.add_argument("--phone")
+    venue.add_argument("--footer", help="a line at the bottom, e.g. Thank you!")
 
     staff = sub.add_parser(
         "add-staff", help="add a staff member; the PIN is asked for (or read from standard input)"
@@ -189,6 +199,22 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         lines += [f"  + {name}" for name in result.created]
         lines += [f"  ~ {name}" for name in result.updated]
         return "\n".join(lines)
+    if args.command == "venue-details":
+        given = {
+            "business_name": args.business_name,
+            "abn": args.abn,
+            "address": args.address,
+            "phone": args.phone,
+            "receipt_footer": args.footer,
+        }
+        loc = update_venue(
+            session, args.location, {k: v for k, v in given.items() if v is not None}
+        )
+        abn = format_abn(loc.abn) if loc.abn else "none (plain receipts)"
+        return (
+            f"{loc.business_name or loc.name}\n  ABN: {abn}\n  Address: {loc.address or '-'}\n"
+            f"  Phone: {loc.phone or '-'}\n  Footer: {loc.receipt_footer or '-'}"
+        )
     if args.command == "add-staff":
         get_location(session, args.location)
         person = create_staff(
