@@ -45,8 +45,13 @@ changing models, keep all six:
 ## Deployment
 
 Self-hosted only until the project is commercial: one venue machine running
-`docker compose` (Postgres, API, web, nightly backups). No GCP; the workspace's Cloud SQL /
-Cloud Build / Terraform defaults don't apply here yet.
+`docker compose` (Postgres, API, web, nightly backups) — the Madras Curry House pilot and
+the open core's self-host path. No GCP; the workspace's Cloud SQL / Cloud Build / Terraform
+defaults don't apply here yet.
+
+Target topology (decided 18 Nov 2026): cloud system of record + local-first React Native
+tills (on-device SQLite + outbox, direct printing, hub-mode relay when the internet drops).
+Design offline and failover work around that, not around a server per venue.
 
 ## Money & time
 

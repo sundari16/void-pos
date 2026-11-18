@@ -5,8 +5,17 @@ linked from the README; this page is the engineering view of what is built.
 
 ## Deployment: one machine on the venue's network
 
-Until Void POS is commercial it runs self-hosted only (no cloud). One always-on machine at
-the venue runs everything with `docker compose`; see [self-host.md](self-host.md).
+**Target topology (decided 18 Nov 2026).** The cloud is the system of record. Tills are the
+React Native app with an on-device store and an outbox, printing straight to the venue's
+printer, so they keep taking orders when the internet drops; meanwhile one of the venue's
+own devices switches to hub mode and relays events between tills over the local network.
+Online ordering, delivery platforms and payment webhooks live in the cloud. Every venue is
+one fleet: no per-venue server to patch, back up or replace.
+
+**Today, and for the Madras Curry House pilot,** Void POS runs self-hosted (no cloud until
+the project is commercial): one always-on machine at the venue runs everything with
+`docker compose`; see [self-host.md](self-host.md). This stays as the open core's
+self-host option, and it is the same server code the cloud will run.
 
 | Service | What it is | Talks to |
 |---|---|---|
@@ -137,10 +146,9 @@ not the previous UTC day's.
 
 ## Not built yet
 
-- **Offline tills.** The till needs the venue server. Working offline means a per-device
-  store with an outbox draining through `/sync/push` (the server side exists), and a PWA
-  over plain HTTP can't register a service worker: that needs local HTTPS or the React
-  Native app.
+- **Offline tills.** The web till needs the venue server. The target is the React Native
+  till: an on-device SQLite store with an outbox draining through `/sync/push` (the server
+  side exists), direct printing, and hub-mode relay between tills when the internet is down.
 - **Hosting.** GCP is deferred until the project is commercial. Moving there means a
   print agent on a venue device (the cloud can't reach a LAN printer) and per-org limits
   on top of the location scoping that already exists.
