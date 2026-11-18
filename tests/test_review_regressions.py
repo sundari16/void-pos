@@ -109,9 +109,9 @@ def test_an_order_from_a_stale_menu_still_lands_with_its_snapshot(ctx: Ctx) -> N
     assert line is not None
     assert (line.menu_item_id, line.name_snapshot) == (None, "Masala Dosa")
 
-    # The online path takes the same order too.
+    # Online, the till hears straight away that the dish is gone, so it can reload.
     r = c.post("/orders", json=order_body(venue, seq=3, order_number=1002), headers=auth(venue.token))
-    assert r.status_code == 200, r.text
+    assert (r.status_code, r.json()["code"]) == (409, "item_unavailable"), r.text
 
 
 def test_another_locations_menu_item_is_not_linked(ctx: Ctx) -> None:

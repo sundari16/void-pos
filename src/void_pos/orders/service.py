@@ -15,6 +15,7 @@ from ..events import EventType, OrderPlaced
 from ..events.types import VOIDED
 from ..models import Device, Order
 from ..printing import Printer, Rasterizer, print_order
+from .rules import check_order_lines
 
 
 @dataclass(frozen=True)
@@ -51,8 +52,8 @@ def place_order(
     *,
     business_date: date | None = None,
 ) -> OrderOutcome:
-    """Place ``order`` as an ``order.placed`` event. The business date defaults to today
-    in the location's own timezone."""
+    """Place ``order`` as an ``order.placed`` event, if it follows the menu's rules (see
+    ``rules``). The business date defaults to today in the location's own timezone."""
     if find_replay(
         session, command, device=device, event_type=EventType.ORDER_PLACED, order_id=order.order_id
     ):
@@ -61,7 +62,9 @@ def place_order(
     if session.get(Order, order.order_id) is not None:
         raise Conflict("an order with this id already exists", code="order_exists")
 
-    day = business_date or local_date(get_location(session, device.location_id).timezone)
+    location = get_location(session, device.location_id)
+    check_order_lines(session, location, order.lines)
+    day = business_date or local_date(location.timezone)
     payload = order.model_dump(mode="json", include=set(OrderPlaced.model_fields))
     record(
         session,
