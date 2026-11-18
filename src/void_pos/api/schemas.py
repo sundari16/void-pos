@@ -264,14 +264,20 @@ class PairRequest(BaseModel):
 
 
 class DeviceSession(BaseModel):
-    """What a till needs to run: who it is, where it is, and its numbering."""
+    """What a till needs to run: who it is, where it is, and where its counters resume
+    (``device.last_seq + 1`` for seq, ``next_order_number`` for order numbers)."""
 
     device: DeviceOut
     location: LocationOut
+    next_order_number: int
 
     @classmethod
-    def of(cls, device: Device, location: Location) -> DeviceSession:
-        return cls(device=DeviceOut.of(device), location=LocationOut.model_validate(location))
+    def of(cls, device: Device, location: Location, *, next_order_number: int) -> DeviceSession:
+        return cls(
+            device=DeviceOut.of(device),
+            location=LocationOut.model_validate(location),
+            next_order_number=next_order_number,
+        )
 
 
 class PairResponse(DeviceSession):

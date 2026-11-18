@@ -197,3 +197,16 @@ def test_a_short_admin_token_is_refused_at_startup() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, admin_token="short")  # type: ignore[call-arg]
     assert Settings(_env_file=None, admin_token="  ").admin_token is None  # type: ignore[call-arg]
+
+
+def test_a_re_paired_till_resumes_its_numbering(ctx: Ctx) -> None:
+    c, venue, _ = ctx
+    me = c.get("/devices/me", headers=auth(venue.token)).json()
+    assert (me["next_order_number"], me["device"]["last_seq"]) == (1000, 0)
+
+    c.post("/orders", json=order_body(venue, seq=1, order_number=1000), headers=auth(venue.token))
+    c.post("/orders", json=order_body(venue, seq=2, order_number=1001), headers=auth(venue.token))
+
+    fresh = c.post(f"/admin/devices/{venue.device_id}/pairing-code", headers=ADMIN).json()
+    paired = c.post("/devices/pair", json={"pairing_code": fresh["pairing_code"]}).json()
+    assert (paired["next_order_number"], paired["device"]["last_seq"]) == (1002, 2)

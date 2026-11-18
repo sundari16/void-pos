@@ -14,12 +14,12 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import as_aware, is_valid_timezone, utcnow
 from ..errors import Conflict, InvalidRequest, NotFound, Unauthorized
-from ..models import Device, Location, Org
+from ..models import Device, Location, Order, Org
 
 # No 0/O, 1/I/L: codes are read off one screen and typed into another.
 PAIRING_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -159,6 +159,15 @@ def pair_device(session: Session, code: str) -> tuple[Device, str]:
     device.pairing_expires_at = None
     session.flush()
     return device, token
+
+
+def next_order_number(session: Session, device: Device) -> int:
+    """Where the till's numbering carries on: one past its highest order, so a till that
+    lost its storage and re-paired never reissues a number."""
+    highest = session.scalar(
+        select(func.max(Order.order_number)).where(Order.device_id == device.id)
+    )
+    return max(device.order_number_start, (highest or 0) + 1)
 
 
 def authenticate_device(session: Session, token: str) -> Device | None:
