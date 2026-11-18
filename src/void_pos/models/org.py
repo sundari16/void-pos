@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..ids import new_ulid
@@ -23,6 +23,12 @@ class Location(Base, TimestampMixin):
     org_id: Mapped[str] = mapped_column(ForeignKey("org.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Australia/Brisbane")
+    # What a customer receipt (an Australian tax invoice, once there is an ABN) shows.
+    business_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    abn: Mapped[str | None] = mapped_column(String(11), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    receipt_footer: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 
 class Device(Base, TimestampMixin):
@@ -53,3 +59,17 @@ class Device(Base, TimestampMixin):
     )
     paired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Staff(Base, TimestampMixin):
+    """Someone who works the tills. A manager's PIN approves voids and switching a dish
+    off. PINs are stored as salted scrypt hashes, never as typed."""
+
+    __tablename__ = "staff"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    location_id: Mapped[str] = mapped_column(ForeignKey("location.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="staff")  # staff|manager
+    pin_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

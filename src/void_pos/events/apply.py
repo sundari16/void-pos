@@ -22,11 +22,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..balance import balance_cents
@@ -43,9 +43,11 @@ from ..models import (
     Order,
     OrderLine,
     Payment,
+    Staff,
 )
-from .payloads import PAYLOAD_SCHEMAS
-from .types import PAID, SENT, VOIDED, EventType, can_transition
+from ..staff import managers_required
+from .payloads import MAX_ORDER_LINES, PAYLOAD_SCHEMAS
+from .types import OPEN, PAID, SENT, VOIDED, EventType, can_transition
 
 
 @dataclass
@@ -144,10 +146,36 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
             return reject(
                 "order_number_used", f"order number {number} is already used by this device"
             )
-    elif event_type in (EventType.ORDER_SENT, EventType.ORDER_VOIDED, EventType.ORDER_PAID):
+    elif event_type in (
+        EventType.ORDER_SENT,
+        EventType.ORDER_VOIDED,
+        EventType.ORDER_PAID,
+        EventType.ORDER_LINES_ADDED,
+    ):
         order = session.get(Order, payload["order_id"])
         if order is not None and order.location_id != location_id:
             return reject("foreign_order", "the order belongs to another location")
+        if event_type == EventType.ORDER_LINES_ADDED:
+            if order is None:
+                return reject(
+                    "unknown_order", "the order isn't here yet; send its order.placed first"
+                )
+            ids = [line["id"] for line in payload["lines"]]
+            taken = session.scalar(select(OrderLine.id).where(OrderLine.id.in_(ids)).limit(1))
+            if taken is not None:
+                return reject("line_exists", f"order line {taken} already exists")
+            count = session.scalar(
+                select(func.count()).select_from(OrderLine).where(OrderLine.order_id == order.id)
+            )
+            if (count or 0) + len(ids) > MAX_ORDER_LINES:
+                return reject(
+                    "order_too_long",
+                    f"an order can have at most {MAX_ORDER_LINES} lines; start another",
+                )
+        if event_type == EventType.ORDER_VOIDED:
+            refusal = _approval_refusal(session, location_id, payload)
+            if refusal is not None:
+                return reject("manager_approval_required", refusal)
     elif event_type == EventType.LOYALTY_RECORDED:
         if _local_customer(session, payload["customer_id"], location_id) is None:
             return reject("unknown_customer", "the customer isn't known at this venue")
@@ -158,7 +186,32 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
     return None
 
 
+def _approval_refusal(
+    session: Session, location_id: str, payload: dict[str, Any]
+) -> str | None:
+    """Once a location has a manager, a void must name an active manager there, by id and
+    name, whichever path it came by. The online path names the manager whose PIN it
+    checked; an event from sync can't name one it doesn't know."""
+    if not managers_required(session, location_id):
+        return None
+    manager = session.get(Staff, payload.get("approved_by") or "")
+    if (
+        manager is None
+        or manager.location_id != location_id
+        or manager.role != "manager"
+        or not manager.active
+        or manager.name != payload.get("approved_by_name")
+    ):
+        return "a void here needs a manager's approval"
+    return None
+
+
 # --- projection handlers ---------------------------------------------------------
+
+
+def _utc(at: datetime) -> datetime:
+    """Stored times are UTC (SQLite keeps the wall time and drops the zone)."""
+    return as_aware(at).astimezone(UTC)
 
 
 def _project(session: Session, event: Event) -> ApplyResult:
@@ -184,10 +237,19 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
             business_date=event.business_date,
             channel=p["channel"],
             fulfillment=p["fulfillment"],
+            table_label=p.get("table_label"),
+            placed_at=_utc(event.occurred_at),
             state="open",
         )
     )
-    for line in p.get("lines", []):
+    _add_lines(session, event, order_id, p.get("lines", []))
+    return ApplyResult(event.event_id, "applied")
+
+
+def _add_lines(
+    session: Session, event: Event, order_id: str, lines: list[dict[str, Any]]
+) -> None:
+    for line in lines:
         session.add(
             OrderLine(
                 id=line["id"],
@@ -205,6 +267,15 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
                 course_number=line.get("course_number"),
             )
         )
+
+
+def _h_order_lines_added(session: Session, event: Event) -> ApplyResult:
+    order = session.get(Order, event.payload["order_id"])
+    if order is None:
+        return ApplyResult(event.event_id, "ignored", "order not found")
+    if order.state in (PAID, VOIDED):
+        return ApplyResult(event.event_id, "conflict", f"can't add to a {order.state} order")
+    _add_lines(session, event, order.id, event.payload["lines"])
     return ApplyResult(event.event_id, "applied")
 
 
@@ -221,7 +292,28 @@ def _transition(session: Session, event: Event, target: str) -> ApplyResult:
 
 
 def _h_order_sent(session: Session, event: Event) -> ApplyResult:
-    return _transition(session, event, SENT)
+    """Mark the lines the kitchen got, then move an open order to sent. Sending more
+    lines to an order the kitchen already has (items added) is applied, not a duplicate;
+    so is a counter-service order sent after it was paid."""
+    order = session.get(Order, event.payload["order_id"])
+    if order is None:
+        return ApplyResult(event.event_id, "ignored", "order not found")
+    if order.state == VOIDED:
+        return ApplyResult(event.event_id, "conflict", "voided -> sent not allowed")
+    stmt = select(OrderLine).where(OrderLine.order_id == order.id, OrderLine.sent_at.is_(None))
+    line_ids = event.payload.get("line_ids")
+    if line_ids is not None:
+        stmt = stmt.where(OrderLine.id.in_(line_ids))
+    marked = 0
+    for line in session.scalars(stmt):
+        line.sent_at = _utc(event.occurred_at)
+        marked += 1
+    if order.state == OPEN:
+        order.state = SENT
+        return ApplyResult(event.event_id, "applied")
+    if marked:
+        return ApplyResult(event.event_id, "applied", f"{marked} more lines to the kitchen")
+    return ApplyResult(event.event_id, "duplicate", f"already {order.state}")
 
 
 def _h_order_voided(session: Session, event: Event) -> ApplyResult:
@@ -287,6 +379,7 @@ _HANDLERS: dict[str, Callable[[Session, Event], ApplyResult]] = {
     EventType.ORDER_SENT: _h_order_sent,
     EventType.ORDER_PAID: _h_order_paid,
     EventType.ORDER_VOIDED: _h_order_voided,
+    EventType.ORDER_LINES_ADDED: _h_order_lines_added,
     EventType.LOYALTY_RECORDED: _h_loyalty_recorded,
 }
 

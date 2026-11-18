@@ -102,6 +102,7 @@ def record(
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
     reverts: MenuChange | None = None,
+    actor: str = "admin",
 ) -> MenuChange:
     number = session.scalar(
         select(func.max(MenuChange.number)).where(MenuChange.location_id == location_id)
@@ -115,6 +116,7 @@ def record(
         before=before,
         after=after,
         reverts_id=reverts.id if reverts is not None else None,
+        actor=actor[:80],
     )
     session.add(change)
     session.flush()

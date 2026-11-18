@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
 
 from void_pos.api.deps import get_printer, get_session
-from void_pos.api.ratelimit import AttemptLimiter, get_pairing_limiter
+from void_pos.api.ratelimit import AttemptLimiter, get_pairing_limiter, get_pin_limiter
 from void_pos.clock import utcnow
 from void_pos.config import Settings, get_settings
 from void_pos.devices import hash_secret
@@ -155,6 +155,8 @@ def api(
     app.dependency_overrides[get_printer] = lambda: printer
     limiter = AttemptLimiter()
     app.dependency_overrides[get_pairing_limiter] = lambda: limiter
+    pin_limiter = AttemptLimiter(per_client=5, overall=50, window=300, what="PINs")
+    app.dependency_overrides[get_pin_limiter] = lambda: pin_limiter
     try:
         yield TestClient(app)
     finally:

@@ -5,6 +5,8 @@
     void-pos pairing-code --device <id>
     void-pos import-menu --location <id> --file menu.csv [--dry-run]
     void-pos import-modifiers --location <id> --file modifiers.csv [--dry-run]
+    void-pos add-staff --location <id> --name "Asha" --role manager   (asks for the PIN)
+    void-pos venue-details --location <id> --abn "51 824 753 556" --address "..."
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -14,6 +16,7 @@ migrated first (the API container does that on start; locally run ``alembic upgr
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 from collections.abc import Sequence
 from datetime import timedelta
@@ -48,6 +51,8 @@ from .printing import (
     encode_ticket,
     needs_image,
 )
+from .receipts import format_abn, update_venue
+from .staff import create_staff, deactivate_staff, list_staff
 
 TEST_LINES = ("Print test", "மசாலா தோசை")  # Masala Dosa in Tamil: checks the font path
 
@@ -94,6 +99,27 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--location", required=True)
     imp.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
     imp.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+
+    venue = sub.add_parser("venue-details", help="set what customer receipts show")
+    venue.add_argument("--location", required=True)
+    venue.add_argument("--business-name", help="defaults to the location's name")
+    venue.add_argument("--abn", help="11 digits; receipts become tax invoices")
+    venue.add_argument("--address")
+    venue.add_argument("--phone")
+    venue.add_argument("--footer", help="a line at the bottom, e.g. Thank you!")
+
+    staff = sub.add_parser(
+        "add-staff", help="add a staff member; the PIN is asked for (or read from standard input)"
+    )
+    staff.add_argument("--location", required=True)
+    staff.add_argument("--name", required=True)
+    staff.add_argument("--role", choices=("staff", "manager"), default="staff")
+
+    who = sub.add_parser("list-staff", help="list a location's active staff")
+    who.add_argument("--location", required=True)
+
+    off = sub.add_parser("deactivate-staff", help="stop a staff member's PIN working")
+    off.add_argument("--staff", required=True, help="staff id")
 
     mods = sub.add_parser(
         "import-modifiers", help="create or update modifier groups from a CSV file"
@@ -173,6 +199,35 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         lines += [f"  + {name}" for name in result.created]
         lines += [f"  ~ {name}" for name in result.updated]
         return "\n".join(lines)
+    if args.command == "venue-details":
+        given = {
+            "business_name": args.business_name,
+            "abn": args.abn,
+            "address": args.address,
+            "phone": args.phone,
+            "receipt_footer": args.footer,
+        }
+        loc = update_venue(
+            session, args.location, {k: v for k, v in given.items() if v is not None}
+        )
+        abn = format_abn(loc.abn) if loc.abn else "none (plain receipts)"
+        return (
+            f"{loc.business_name or loc.name}\n  ABN: {abn}\n  Address: {loc.address or '-'}\n"
+            f"  Phone: {loc.phone or '-'}\n  Footer: {loc.receipt_footer or '-'}"
+        )
+    if args.command == "add-staff":
+        get_location(session, args.location)
+        person = create_staff(
+            session, location_id=args.location, name=args.name, role=args.role, pin=_read_pin()
+        )
+        return f"Added {person.role} {person.name}: {person.id}"
+    if args.command == "list-staff":
+        get_location(session, args.location)
+        people = list_staff(session, args.location)
+        return "\n".join(f"{p.id}  {p.role:<8} {p.name}" for p in people) or "No staff yet."
+    if args.command == "deactivate-staff":
+        person = deactivate_staff(session, args.staff)
+        return f"Deactivated {person.name}; their PIN no longer works"
     if args.command == "import-modifiers":
         get_location(session, args.location)
         groups = parse_modifier_csv(_read_text(args.file))
@@ -188,6 +243,16 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         lines += [f"  = {link}" for link in mod_result.attached]
         return "\n".join(lines)
     raise AssertionError(args.command)
+
+
+def _read_pin() -> str:
+    """The PIN from a prompt (typed twice, not echoed), or one line of standard input."""
+    if not sys.stdin.isatty():
+        return sys.stdin.readline().strip()
+    pin = getpass.getpass("PIN (4 to 8 digits): ")
+    if getpass.getpass("Same PIN again: ") != pin:
+        raise VoidPosError("the two PINs don't match", code="invalid_pin")
+    return pin
 
 
 def _read_text(path: str) -> str:

@@ -14,10 +14,17 @@ from pydantic import (
 )
 
 from ..clock import as_aware
-from ..events.payloads import CURRENCY_PATTERN, MAX_LINE_CENTS, OrderPlaced
+from ..events.payloads import (
+    CURRENCY_PATTERN,
+    MAX_LINE_CENTS,
+    OrderLineIn,
+    OrderPlaced,
+    check_line_tree,
+)
 from ..ids import Ulid
 from ..menu.service import TillMenu
-from ..models import Device, Location, MenuChange
+from ..models import Device, Location, MenuChange, OrderLine, Payment
+from ..orders.views import OrderView
 
 # --- till commands ----------------------------------------------------------------
 
@@ -35,14 +42,119 @@ class PlaceOrderRequest(CommandIn, OrderPlaced):
     business_date: date | None = None  # default: today in the location's timezone
 
 
-class OrderResponse(BaseModel):
+class OrderLineOut(BaseModel):
+    id: str
+    parent_line_id: str | None
+    menu_item_id: str | None
+    modifier_id: str | None
+    quantity: int
+    name: str
+    kitchen_name: str | None
+    unit_price_cents: int
+    tax_rate: float
+    category: str | None
+    seat_number: int | None
+    course_number: int | None
+    sent: bool  # the kitchen has it
+
+    @classmethod
+    def of(cls, line: OrderLine) -> OrderLineOut:
+        return cls(
+            id=line.id,
+            parent_line_id=line.parent_line_id,
+            menu_item_id=line.menu_item_id,
+            modifier_id=line.modifier_id,
+            quantity=line.quantity,
+            name=line.name_snapshot,
+            kitchen_name=line.kitchen_name_snapshot,
+            unit_price_cents=line.unit_price_cents,
+            tax_rate=float(line.tax_rate_snapshot),
+            category=line.category_snapshot,
+            seat_number=line.seat_number,
+            course_number=line.course_number,
+            sent=line.sent_at is not None,
+        )
+
+
+class PaymentOut(BaseModel):
+    payment_id: str
+    provider: str
+    external_ref: str | None
+    amount_cents: int
+    currency: str
+    status: str
+
+    @classmethod
+    def of(cls, payment: Payment) -> PaymentOut:
+        return cls(
+            payment_id=payment.id,
+            provider=payment.provider,
+            external_ref=payment.external_ref,
+            amount_cents=payment.amount_cents,
+            currency=payment.currency,
+            status=payment.status,
+        )
+
+
+class OrderSummary(BaseModel):
+    """An order in a list: enough to find the table and see what's owing."""
+
     id: str
     order_number: int
     state: str
+    fulfillment: str
+    table_label: str | None
     business_date: date
+    created_at: datetime
     total_cents: int
+    gst_cents: int
     balance_cents: int
+    unsent_lines: int  # lines the kitchen hasn't had yet
+
+    @classmethod
+    def of(cls, view: OrderView) -> OrderSummary:
+        o = view.order
+        return cls(
+            id=o.id,
+            order_number=o.order_number,
+            state=o.state,
+            fulfillment=o.fulfillment,
+            table_label=o.table_label,
+            business_date=o.business_date,
+            created_at=as_aware(o.created_at),
+            total_cents=view.total_cents,
+            gst_cents=view.gst_cents,
+            balance_cents=view.balance_cents,
+            unsent_lines=view.unsent_lines,
+        )
+
+
+class OrderResponse(OrderSummary):
+    """The whole order, as a till needs it to carry on with it."""
+
+    lines: list[OrderLineOut]
+    payments: list[PaymentOut]
     replayed: bool = False
+
+    @classmethod
+    def of_view(cls, view: OrderView, *, replayed: bool = False) -> OrderResponse:
+        return cls(
+            **OrderSummary.of(view).model_dump(),
+            lines=[OrderLineOut.of(line) for line in view.lines],
+            payments=[PaymentOut.of(p) for p in view.payments],
+            replayed=replayed,
+        )
+
+
+class AddLinesRequest(CommandIn):
+    """More items for a placed order: new item lines with their modifiers."""
+
+    lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _line_tree(self) -> AddLinesRequest:
+        check_line_tree(self.lines)
+        return self
 
 
 class KitchenRequest(CommandIn):
@@ -54,11 +166,16 @@ class KitchenResponse(BaseModel):
     state: str
     printed: bool  # false when no kitchen printer is configured, or on a replay
     ticket_bytes: int
+    lines_sent: int  # lines the kitchen hadn't had; 0 means the ticket was a reprint
     replayed: bool = False
+
+
+Pin = Annotated[str, StringConstraints(pattern=r"^[0-9]{4,8}$")]
 
 
 class VoidRequest(CommandIn):
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    manager_pin: Pin | None = None  # needed once the location has a manager
 
 
 class VoidResponse(BaseModel):
@@ -177,6 +294,14 @@ class MenuItemUpdate(BaseModel):
     def _no_null_for_required(self) -> MenuItemUpdate:
         _no_null(self, _REQUIRED_ON_ITEM)
         return self
+
+
+class AvailabilityIn(BaseModel):
+    """Switch a dish off when it sells out (or back on). From a till this needs a
+    manager's PIN once the location has a manager."""
+
+    is_available: bool
+    manager_pin: Pin | None = None
 
 
 class MenuItemEdit(MenuItemUpdate):
@@ -339,6 +464,26 @@ class MenuChangeOut(BaseModel):
 # --- venue setup and pairing -------------------------------------------------------
 
 
+class StaffIn(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+    role: Literal["staff", "manager"] = "staff"
+    pin: Pin
+
+
+class PinIn(BaseModel):
+    pin: Pin
+
+
+class StaffOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    location_id: str
+    name: str
+    role: str
+    active: bool
+
+
 class LocationIn(BaseModel):
     org_name: Name
     name: Name
@@ -352,6 +497,59 @@ class LocationOut(BaseModel):
     org_id: str
     name: str
     timezone: str
+    business_name: str | None = None
+    abn: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    receipt_footer: str | None = None
+
+
+class VenueDetailsIn(BaseModel):
+    """What customer receipts show. A blank value clears it; an ABN makes receipts tax
+    invoices."""
+
+    business_name: str | None = Field(default=None, max_length=200)
+    abn: str | None = Field(default=None, max_length=20)
+    address: str | None = Field(default=None, max_length=300)
+    phone: str | None = Field(default=None, max_length=40)
+    receipt_footer: str | None = Field(default=None, max_length=300)
+
+
+class ReceiptLineOut(BaseModel):
+    quantity: int
+    name: str
+    amount_cents: int
+    is_modifier: bool
+
+
+class ReceiptPaymentOut(BaseModel):
+    label: str
+    amount_cents: int
+    reference: str | None
+
+
+class ReceiptOut(BaseModel):
+    title: str
+    venue_name: str
+    address: str | None
+    phone: str | None
+    abn: str | None
+    order_number: int
+    table_label: str | None
+    ordered_at: str
+    printed_at: str
+    lines: list[ReceiptLineOut]
+    total_cents: int
+    gst_cents: int
+    payments: list[ReceiptPaymentOut]
+    balance_cents: int
+    voided: bool
+    footer: str | None
+
+
+class ReceiptPrinted(BaseModel):
+    printed: bool
+    ticket_bytes: int
 
 
 class DeviceIn(BaseModel):

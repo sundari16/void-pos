@@ -52,7 +52,9 @@ def encode_ticket(ticket: KitchenTicket, rasterizer: Rasterizer | None = None) -
         out += f"VOID #{ticket.order_number}".encode("ascii") + LF
         out += SIZE_NORMAL + b"DO NOT MAKE" + LF
     else:
-        out += f"ORDER #{ticket.order_number}".encode("ascii") + LF
+        out += f"{ticket.heading} #{ticket.order_number}".encode("ascii") + LF
+    if ticket.table_label:
+        out += SIZE_DOUBLE + _render_line(f"Table {ticket.table_label}", rasterizer)
     out += SIZE_NORMAL + BOLD_OFF + ALIGN_LEFT
     out += f"{ticket.channel} / {ticket.fulfillment}".encode("ascii") + LF
     out += ticket.business_date.isoformat().encode("ascii") + LF

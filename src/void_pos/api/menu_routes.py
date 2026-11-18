@@ -23,9 +23,11 @@ from ..menu import (
     update_modifier,
     update_modifier_group,
 )
+from .approval import PinLimiterDep, approve
 from .auth import AdminDep, PrincipalDep
 from .deps import get_session
 from .schemas import (
+    AvailabilityIn,
     BulkMenuUpdate,
     MenuChangeOut,
     MenuItemIn,
@@ -100,6 +102,28 @@ def patch_menu_item(
     item_id: str, body: MenuItemUpdate, session: SessionDep, _: AdminDep
 ) -> MenuItemOut:
     item = update_item(session, item_id, body.model_dump(exclude_unset=True))
+    session.commit()
+    return MenuItemOut.model_validate(item)
+
+
+@router.post("/menu/items/{item_id}/availability", response_model=MenuItemOut)
+def set_item_availability(
+    item_id: str,
+    body: AvailabilityIn,
+    session: SessionDep,
+    principal: PrincipalDep,
+    pins: PinLimiterDep,
+) -> MenuItemOut:
+    """Switch a dish off when it sells out, or back on. A till may do it with a manager's
+    PIN (once the location has a manager); the change history records who."""
+    item = get_item(session, item_id)
+    principal.require_location(item.location_id)
+    actor = "admin"
+    if principal.device is not None:
+        manager = approve(session, principal.device, body.manager_pin, pins)
+        till = principal.device.name
+        actor = f"{manager.name} on {till}" if manager is not None else till
+    update_item(session, item_id, {"is_available": body.is_available}, actor=actor)
     session.commit()
     return MenuItemOut.model_validate(item)
 

@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import as_aware
 from ..errors import NotFound
 from ..models import (
     Customer,
@@ -28,6 +29,7 @@ from ..models import (
     Order,
     OrderLine,
     Payment,
+    Staff,
 )
 
 CSV_ENTITIES = ("menu_items", "orders", "order_lines", "payments", "customers", "loyalty_ledger")
@@ -60,6 +62,9 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
         select(LoyaltyLedger).where(LoyaltyLedger.location_id == location_id)
     ).all()
     customers = session.scalars(select(Customer).where(Customer.location_id == location_id)).all()
+    staff = session.scalars(
+        select(Staff).where(Staff.location_id == location_id).order_by(Staff.name)
+    ).all()
     changes = session.scalars(
         select(MenuChange)
         .where(MenuChange.location_id == location_id)
@@ -84,7 +89,16 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
             "org_id": loc.org_id,
             "name": loc.name,
             "timezone": loc.timezone,
+            "business_name": loc.business_name,
+            "abn": loc.abn,
+            "address": loc.address,
+            "phone": loc.phone,
+            "receipt_footer": loc.receipt_footer,
         },
+        # Who works here; PIN hashes stay behind.
+        "staff": [
+            {"id": p.id, "name": p.name, "role": p.role, "active": p.active} for p in staff
+        ],
         "menu": {
             "items": [_menu_item(i) for i in items],
             "modifier_groups": [_modifier_group(g) for g in groups],
@@ -187,6 +201,7 @@ def _order(o: Order) -> dict[str, Any]:
         "channel": o.channel,
         "fulfillment": o.fulfillment,
         "state": o.state,
+        "table_label": o.table_label,
         "customer_id": o.customer_id,
         "device_id": o.device_id,
     }
@@ -205,6 +220,7 @@ def _order_line(line: OrderLine) -> dict[str, Any]:
         "category": line.category_snapshot,
         "seat_number": line.seat_number,
         "course_number": line.course_number,
+        "sent_at": as_aware(line.sent_at).isoformat() if line.sent_at else None,
     }
 
 

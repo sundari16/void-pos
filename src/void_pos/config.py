@@ -25,7 +25,18 @@ class Settings(BaseSettings):
     kitchen_printer_port: int = Field(default=9100, ge=1, le=65535)
     kitchen_font_path: str | None = None  # a font with the glyphs for non-Latin tickets
 
-    @field_validator("admin_token", "kitchen_printer_host", "kitchen_font_path", mode="before")
+    # Customer receipts (optional; unset = the till shows the receipt to print another way).
+    receipt_printer_host: str | None = None
+    receipt_printer_port: int = Field(default=9100, ge=1, le=65535)
+    receipt_printer_columns: int = Field(default=42, ge=24, le=64)  # 42 for 80 mm, 32 for 58 mm
+
+    @field_validator(
+        "admin_token",
+        "kitchen_printer_host",
+        "kitchen_font_path",
+        "receipt_printer_host",
+        mode="before",
+    )
     @classmethod
     def _blank_is_unset(cls, value: Any) -> Any:
         return None if isinstance(value, str) and not value.strip() else value

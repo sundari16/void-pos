@@ -80,16 +80,61 @@ export interface PlaceOrderRequest extends CommandIn {
   fulfillment: string;
   customer_id?: string | null;
   business_date?: string | null;
+  table_label?: string | null;
   lines: LineIn[];
 }
 
-export interface OrderResponse {
+/** More items for a placed order. */
+export interface AddLinesRequest extends CommandIn {
+  lines: LineIn[];
+}
+
+/** A line of a placed order, as the server has it. */
+export interface OrderLineOut {
+  id: string;
+  parent_line_id: string | null;
+  menu_item_id: string | null;
+  modifier_id: string | null;
+  quantity: number;
+  name: string;
+  kitchen_name: string | null;
+  unit_price_cents: number;
+  tax_rate: number;
+  category: string | null;
+  seat_number: number | null;
+  course_number: number | null;
+  /** The kitchen has it. */
+  sent: boolean;
+}
+
+export interface PaymentOut {
+  payment_id: string;
+  provider: string;
+  external_ref: string | null;
+  amount_cents: number;
+  currency: string;
+  status: string;
+}
+
+/** An order in a list (GET /locations/{id}/orders). */
+export interface OrderSummary {
   id: string;
   order_number: number;
   state: string;
+  fulfillment: string;
+  table_label: string | null;
   business_date: string;
+  created_at: string;
   total_cents: number;
+  gst_cents: number;
   balance_cents: number;
+  unsent_lines: number;
+}
+
+/** The whole order (place, add items, read). */
+export interface OrderResponse extends OrderSummary {
+  lines: OrderLineOut[];
+  payments: PaymentOut[];
   replayed: boolean;
 }
 
@@ -98,11 +143,39 @@ export interface KitchenResponse {
   state: string;
   printed: boolean;
   ticket_bytes: number;
+  /** Lines the kitchen hadn't had; 0 means the ticket was a reprint. */
+  lines_sent: number;
   replayed: boolean;
 }
 
 export interface VoidRequest extends CommandIn {
   reason: string;
+  /** Needed once the venue has a manager. */
+  manager_pin?: string | null;
+}
+
+export interface AvailabilityRequest {
+  is_available: boolean;
+  manager_pin?: string | null;
+}
+
+export interface ReceiptOut {
+  title: string;
+  venue_name: string;
+  address: string | null;
+  phone: string | null;
+  abn: string | null;
+  order_number: number;
+  table_label: string | null;
+  ordered_at: string;
+  printed_at: string;
+  lines: { quantity: number; name: string; amount_cents: number; is_modifier: boolean }[];
+  total_cents: number;
+  gst_cents: number;
+  payments: { label: string; amount_cents: number; reference: string | null }[];
+  balance_cents: number;
+  voided: boolean;
+  footer: string | null;
 }
 
 export interface VoidResponse {
@@ -174,6 +247,10 @@ export interface Closeout {
     voided: number;
   };
   gross_sales_cents: number;
+  paid_sales_cents: number;
+  gst_cents: number;
+  sales_ex_gst_cents: number;
+  open_balance_cents: number;
   payments_by_provider: Record<string, number>;
   revenue_by_class_cents: Record<string, number>;
 }

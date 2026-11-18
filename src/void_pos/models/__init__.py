@@ -8,7 +8,7 @@ from .crm import Customer
 from .event import Event, SyncCounter
 from .loyalty import LoyaltyLedger
 from .order import Order, OrderLine
-from .org import Device, Location, Org
+from .org import Device, Location, Org, Staff
 from .payment import Payment
 
 __all__ = [
@@ -27,5 +27,6 @@ __all__ = [
     "OrderLine",
     "Org",
     "Payment",
+    "Staff",
     "SyncCounter",
 ]

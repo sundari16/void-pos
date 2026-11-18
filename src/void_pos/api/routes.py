@@ -2,43 +2,60 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from ..clock import local_date
 from ..commands import Command
+from ..config import Settings, get_settings
 from ..devices import get_location
+from ..errors import ServiceUnavailable
 from ..export import export_csv, export_location
 from ..models import Order
-from ..orders import get_order, place_order, send_to_kitchen, void_order
+from ..orders import (
+    UNSETTLED,
+    add_lines,
+    get_order,
+    list_orders,
+    order_view,
+    order_views,
+    place_order,
+    send_to_kitchen,
+    void_order,
+)
 from ..payments import (
     CashProvider,
     ExternalProvider,
     PaymentProvider,
-    balance_cents,
-    order_total_cents,
     pay_order,
 )
 from ..printing import Printer, Rasterizer
+from ..receipts import build_receipt, encode_receipt
 from ..reporting import shift_closeout
 from ..sync import MAX_PULL, pull_events, push_events
+from .approval import PinLimiterDep, approve
 from .auth import AdminDep, DeviceDep, PrincipalDep
-from .deps import get_printer, get_rasterizer, get_session
+from .deps import get_printer, get_rasterizer, get_receipt_printer, get_session
 from .schemas import (
     Ack,
+    AddLinesRequest,
     CommandIn,
     KitchenRequest,
     KitchenResponse,
     OrderResponse,
+    OrderSummary,
     PaymentResponse,
     PayRequest,
     PlaceOrderRequest,
     PullResponse,
     PushRequest,
     PushResponse,
+    ReceiptOut,
+    ReceiptPrinted,
     VoidRequest,
     VoidResponse,
 )
@@ -48,6 +65,8 @@ router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session)]
 PrinterDep = Annotated[Printer | None, Depends(get_printer)]
 RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
+ReceiptPrinterDep = Annotated[Printer | None, Depends(get_receipt_printer)]
+OrderState = Literal["open", "sent", "paid", "voided"]
 
 
 def _command(body: CommandIn) -> Command:
@@ -55,15 +74,7 @@ def _command(body: CommandIn) -> Command:
 
 
 def _order_response(session: Session, order: Order, *, replayed: bool) -> OrderResponse:
-    return OrderResponse(
-        id=order.id,
-        order_number=order.order_number,
-        state=order.state,
-        business_date=order.business_date,
-        total_cents=order_total_cents(session, order.id),
-        balance_cents=balance_cents(session, order.id),
-        replayed=replayed,
-    )
+    return OrderResponse.of_view(order_view(session, order), replayed=replayed)
 
 
 @router.post("/orders", response_model=OrderResponse, tags=["orders"])
@@ -71,6 +82,73 @@ def place_order_route(req: PlaceOrderRequest, session: SessionDep, device: Devic
     outcome = place_order(session, device, _command(req), req, business_date=req.business_date)
     session.commit()
     return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.get(
+    "/locations/{location_id}/orders", response_model=list[OrderSummary], tags=["orders"]
+)
+def read_orders(
+    location_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+    state: Annotated[list[OrderState] | None, Query()] = None,
+    business_date: date | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> list[OrderSummary]:
+    """A location's orders, newest first: by default the unsettled ones (open or sent,
+    whatever the date), so a till can pick a table back up."""
+    principal.require_location(location_id)
+    orders = list_orders(
+        session,
+        location_id,
+        states=state or UNSETTLED,
+        business_date=business_date,
+        limit=limit,
+    )
+    return [OrderSummary.of(view) for view in order_views(session, orders)]
+
+
+@router.post("/orders/{order_id}/lines", response_model=OrderResponse, tags=["orders"])
+def add_lines_route(
+    order_id: str, body: AddLinesRequest, session: SessionDep, device: DeviceDep
+) -> OrderResponse:
+    """Add items to a placed order; send to the kitchen again to print just those."""
+    outcome = add_lines(session, device, order_id, _command(body), body.lines)
+    session.commit()
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.get("/orders/{order_id}/receipt", response_model=ReceiptOut, tags=["orders"])
+def read_receipt(order_id: str, session: SessionDep, principal: PrincipalDep) -> ReceiptOut:
+    """The customer receipt (a tax invoice once the venue has an ABN), to show or print."""
+    order = get_order(session, order_id, location_id=principal.location_id)
+    receipt = build_receipt(session, order_view(session, order))
+    return ReceiptOut.model_validate(asdict(receipt))
+
+
+@router.post("/orders/{order_id}/print-receipt", response_model=ReceiptPrinted, tags=["orders"])
+def print_receipt(
+    order_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+    printer: ReceiptPrinterDep,
+    rasterizer: RasterizerDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ReceiptPrinted:
+    """Print the customer receipt on the receipt printer. Nothing is recorded, so it can
+    be printed again as often as needed."""
+    order = get_order(session, order_id, location_id=principal.location_id)
+    if printer is None:
+        raise ServiceUnavailable(
+            "no receipt printer is set up; show the receipt on screen instead",
+            code="no_receipt_printer",
+        )
+    receipt = build_receipt(session, order_view(session, order))
+    data = encode_receipt(
+        receipt, columns=settings.receipt_printer_columns, rasterizer=rasterizer
+    )
+    printer.send(data)
+    return ReceiptPrinted(printed=True, ticket_bytes=len(data))
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse, tags=["orders"])
@@ -97,6 +175,7 @@ def send_to_kitchen_route(
         state=outcome.order.state,
         printed=outcome.printed,
         ticket_bytes=outcome.ticket_bytes,
+        lines_sent=outcome.lines_sent,
         replayed=outcome.replayed,
     )
 
@@ -109,7 +188,9 @@ def void_route(
     device: DeviceDep,
     printer: PrinterDep,
     rasterizer: RasterizerDep,
+    pins: PinLimiterDep,
 ) -> VoidResponse:
+    manager = approve(session, device, body.manager_pin, pins)
     outcome = void_order(
         session,
         device,
@@ -118,6 +199,7 @@ def void_route(
         reason=body.reason,
         printer=printer,
         rasterizer=rasterizer,
+        approved_by=manager,
     )
     session.commit()
     return VoidResponse(

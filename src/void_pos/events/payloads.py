@@ -18,6 +18,7 @@ from ..totals import total_cents
 from .types import EventType
 
 MAX_LINE_CENTS = 10_000_000  # $100,000 per line: a typo guard, not a business limit
+MAX_ORDER_LINES = 1000  # lines on one order, items and modifiers, however many adds
 
 Channel = Literal["pos", "voice", "qr", "web", "aggregator"]
 Fulfillment = Literal["pickup", "delivery", "dine_in"]
@@ -75,6 +76,7 @@ class OrderPlaced(_Payload):
     channel: Channel
     fulfillment: Fulfillment
     customer_id: Ulid | None = None
+    table_label: str | None = Field(default=None, min_length=1, max_length=40)  # "12", "Patio 3"
     lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
@@ -87,8 +89,30 @@ class OrderRef(_Payload):
     order_id: Ulid
 
 
+class OrderLinesAdded(_Payload):
+    """More items for an order already placed (a table orders dessert). New item lines,
+    each with its own modifiers; the lines already on the order don't change."""
+
+    order_id: Ulid
+    lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _line_tree(self) -> OrderLinesAdded:
+        check_line_tree(self.lines)
+        return self
+
+
+class OrderSent(OrderRef):
+    """The kitchen got these lines. Without ``line_ids`` (older tills): every line it
+    hadn't had yet."""
+
+    line_ids: list[Ulid] | None = Field(default=None, max_length=MAX_ORDER_LINES)
+
+
 class OrderVoided(OrderRef):
     reason: str | None = Field(default=None, max_length=200)
+    approved_by: Ulid | None = None  # the manager whose PIN approved it
+    approved_by_name: str | None = Field(default=None, max_length=120)
 
 
 class PaymentIn(_Payload):
@@ -115,7 +139,8 @@ class LoyaltyRecorded(_Payload):
 
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     EventType.ORDER_PLACED: OrderPlaced,
-    EventType.ORDER_SENT: OrderRef,
+    EventType.ORDER_LINES_ADDED: OrderLinesAdded,
+    EventType.ORDER_SENT: OrderSent,
     EventType.ORDER_VOIDED: OrderVoided,
     EventType.ORDER_PAID: OrderPaid,
     EventType.LOYALTY_RECORDED: LoyaltyRecorded,

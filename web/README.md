@@ -63,17 +63,23 @@ If the API isn't on `http://localhost:8000`, set `VOIDPOS_API_URL` in `web/.env.
    required group has its choices. A **note for the kitchen** goes on as a free-text line.
    **Place order** posts to `POST /orders`; if the server refuses because the menu changed
    (an item switched off, out of its window), the till says why and reloads the menu.
-3. Once placed, **Send to kitchen** and payment act on the order. The amount defaults to
-   what is owing; type a smaller amount to take part of it, or **Split 2/3/4** to take even
-   shares one after another (in whole cents: $10.00 three ways is 3.34, 3.33, 3.33). Each
-   share is **Pay cash**, or **Card on terminal** for a card taken on the venue's own
-   terminal: the cashier types the terminal's receipt or approval number, and it's recorded
-   as an `external` payment. The order turns paid once its payments cover the total; the
-   state badge follows `open → sent → paid`.
-4. **Void order** (before any payment) asks for a reason, then voids it; if the kitchen has
-   the order, a VOID ticket prints. **New order** starts the next ticket.
-5. **Closeout** (`/closeout`) — `GET /reports/{location_id}/closeout` for a business date in
-   the location's timezone: gross sales, order counts, payments by provider, revenue by class.
+3. Once placed, the order shows its lines and which ones the kitchen hasn't had. **Send to
+   kitchen** prints the order; add more items later (tap dishes, then **Add N items to the
+   order**) and Send prints just those. A dine-in order takes a table number, and **Open
+   orders** lists every unsettled order to pick a table back up.
+4. Payment: the amount defaults to what is owing; type a smaller amount to take part of it,
+   or **Split 2/3/4** to take even shares one after another (in whole cents: $10.00 three
+   ways is 3.34, 3.33, 3.33). Each share is **Pay cash**, or **Card on terminal** for a card
+   taken on the venue's own terminal: the cashier types the terminal's receipt or approval
+   number, and it's recorded as an `external` payment. The order turns paid once its
+   payments cover the total. **Receipt** shows the tax invoice to send to the receipt
+   printer or print from the tablet.
+5. **Void order** (before any payment) asks for a reason, then a manager's PIN if the venue
+   has managers; if the kitchen has the order, a VOID ticket prints. **Mark sold out**
+   switches dishes off and on, with the same PIN. **New order** starts the next ticket.
+6. **Closeout** (`/closeout`) — `GET /reports/{location_id}/closeout` for a business date in
+   the location's timezone: money taken, sales and GST, what's still owing, order counts,
+   payments by provider, revenue by class.
 
 ## Retries are safe
 
@@ -96,4 +102,5 @@ twice. See `src/lib/commands.ts`.
 - **Offline**: the till needs the server to place orders. A PWA served over plain HTTP from
   a LAN address can't register a service worker, so working offline needs local HTTPS or the
   React Native app (an open decision in the architecture doc).
-- Editing a ticket is disabled once the order is placed (void it and ring it up again).
+- Items already on a placed order can't be changed or removed (void it and ring it up
+  again); new items can be added.

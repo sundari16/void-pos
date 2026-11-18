@@ -94,10 +94,14 @@ def list_items(session: Session, location_id: str, *, include_deleted: bool = Fa
     return list(session.scalars(stmt.order_by(MenuItem.name)).all())
 
 
-def update_item(session: Session, item_id: str, fields: dict[str, Any]) -> MenuItem:
+def update_item(
+    session: Session, item_id: str, fields: dict[str, Any], *, actor: str = "admin"
+) -> MenuItem:
     """Apply the given fields; only the ones that actually change are recorded."""
     item = get_item(session, item_id)
-    _update(session, item, "menu_item", item.location_id, fields, ITEM_FIELDS, item_values)
+    _update(
+        session, item, "menu_item", item.location_id, fields, ITEM_FIELDS, item_values, actor
+    )
     return item
 
 
@@ -144,6 +148,7 @@ def _update(
     fields: dict[str, Any],
     allowed: tuple[str, ...],
     values: Callable[[Any], dict[str, Any]],
+    actor: str = "admin",
 ) -> None:
     """Apply ``fields`` to a menu row, check the result, and record what changed."""
     old = values(row)
@@ -166,6 +171,7 @@ def _update(
             action="update",
             before={field: old[field] for field in changed},
             after={field: new[field] for field in changed},
+            actor=actor,
         )
 
 

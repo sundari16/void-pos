@@ -33,6 +33,8 @@ export function draftItemFrom(
   chosen: ChosenModifier[],
   note?: string,
 ): DraftItem {
+  // The item's id first: ids are time-ordered, so lines sort item before its modifiers.
+  const ref = ulid();
   const modifiers: DraftModifier[] = chosen.map(({ modifier, quantity: count }) => ({
     ref: ulid(),
     modifierId: modifier.id,
@@ -44,7 +46,7 @@ export function draftItemFrom(
   const text = note?.trim();
   if (text) modifiers.push({ ref: ulid(), name: text, unitPriceCents: 0, quantity: 1 });
   return {
-    ref: ulid(),
+    ref,
     menuItemId: item.id,
     name: item.name,
     kitchenName: item.kitchen_name ?? undefined,

@@ -96,8 +96,27 @@ export default function CloseoutPage() {
               </span>
             </div>
             <p className="mt-1 text-xs text-muted">
-              Business date {report.business_date}
+              Money taken on business date {report.business_date}, part payments included
             </p>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-surface p-4">
+            <h2 className="mb-3 text-sm font-semibold">Paid orders and GST</h2>
+            <dl className="space-y-1.5 text-sm">
+              {(
+                [
+                  ["Sales (GST included)", report.paid_sales_cents],
+                  ["GST", report.gst_cents],
+                  ["Sales ex GST", report.sales_ex_gst_cents],
+                  ["Still owing on open orders", report.open_balance_cents],
+                ] as const
+              ).map(([label, cents]) => (
+                <div key={label} className="flex justify-between">
+                  <dt className="text-muted">{label}</dt>
+                  <dd className="tabular-nums">{formatCents(cents)}</dd>
+                </div>
+              ))}
+            </dl>
           </section>
 
           <section className="rounded-2xl border border-border bg-surface p-4">

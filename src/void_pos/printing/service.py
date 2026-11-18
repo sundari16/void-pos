@@ -18,6 +18,8 @@ def print_order(
     rasterizer: Rasterizer | None = None,
     *,
     void_reason: str | None = None,
+    line_ids: list[str] | None = None,
+    heading: str = "ORDER",
 ) -> bytes:
     """Build the kitchen ticket for an order and send it to the printer. With
     ``void_reason`` it is a VOID ticket telling the kitchen to stop the order.
@@ -30,7 +32,10 @@ def print_order(
     lines = session.scalars(
         select(OrderLine).where(OrderLine.order_id == order_id).order_by(OrderLine.id)
     ).all()
-    ticket = build_kitchen_ticket(order, lines, void_reason=void_reason)
+    if line_ids is not None:
+        wanted = set(line_ids)
+        lines = [line for line in lines if line.id in wanted]
+    ticket = build_kitchen_ticket(order, lines, void_reason=void_reason, heading=heading)
     data = encode_ticket(ticket, rasterizer=rasterizer)
     printer.send(data)
     return data
