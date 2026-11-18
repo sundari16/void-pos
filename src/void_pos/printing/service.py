@@ -16,8 +16,11 @@ def print_order(
     order_id: str,
     printer: Printer,
     rasterizer: Rasterizer | None = None,
+    *,
+    void_reason: str | None = None,
 ) -> bytes:
-    """Build the kitchen ticket for an order and send it to the printer.
+    """Build the kitchen ticket for an order and send it to the printer. With
+    ``void_reason`` it is a VOID ticket telling the kitchen to stop the order.
 
     Returns the raw ESC/POS bytes so callers can log or test them.
     """
@@ -27,6 +30,7 @@ def print_order(
     lines = session.scalars(
         select(OrderLine).where(OrderLine.order_id == order_id).order_by(OrderLine.id)
     ).all()
-    data = encode_ticket(build_kitchen_ticket(order, lines), rasterizer=rasterizer)
+    ticket = build_kitchen_ticket(order, lines, void_reason=void_reason)
+    data = encode_ticket(ticket, rasterizer=rasterizer)
     printer.send(data)
     return data

@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from ..balance import balance_cents
 from ..clock import as_aware
 from ..models import (
     Customer,
@@ -254,6 +255,11 @@ def _h_order_paid(session: Session, event: Event) -> ApplyResult:
         return ApplyResult(event.event_id, "duplicate", "already paid")
     if not can_transition(order.state, PAID):
         return ApplyResult(event.event_id, "conflict", f"{order.state} -> paid not allowed")
+    if pay is not None:
+        session.flush()
+        owing = balance_cents(session, order.id)
+        if owing > 0:
+            return ApplyResult(event.event_id, "applied", f"part payment; {owing} cents owing")
     order.state = PAID
     return ApplyResult(event.event_id, "applied")
 

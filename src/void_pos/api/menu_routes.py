@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..menu import (
     attach_modifier_group,
+    bulk_update_items,
     create_item,
     create_modifier,
     create_modifier_group,
@@ -17,24 +18,38 @@ from ..menu import (
     list_changes,
     list_items,
     revert_change,
+    till_menu,
     update_item,
+    update_modifier,
+    update_modifier_group,
 )
 from .auth import AdminDep, PrincipalDep
 from .deps import get_session
 from .schemas import (
+    BulkMenuUpdate,
     MenuChangeOut,
     MenuItemIn,
     MenuItemOut,
     MenuItemUpdate,
     ModifierGroupIn,
     ModifierGroupOut,
+    ModifierGroupUpdate,
     ModifierIn,
     ModifierOut,
+    ModifierUpdate,
+    TillMenuOut,
 )
 
 router = APIRouter(tags=["menu"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+@router.get("/locations/{location_id}/menu", response_model=TillMenuOut)
+def read_till_menu(location_id: str, session: SessionDep, principal: PrincipalDep) -> TillMenuOut:
+    """The whole menu for a till: items, their modifier groups, and what is on sale now."""
+    principal.require_location(location_id)
+    return TillMenuOut.of(till_menu(session, location_id))
 
 
 @router.post(
@@ -56,6 +71,20 @@ def list_menu_items(
 ) -> list[MenuItemOut]:
     principal.require_location(location_id)
     items = list_items(session, location_id, include_deleted=include_deleted)
+    return [MenuItemOut.model_validate(item) for item in items]
+
+
+@router.patch("/locations/{location_id}/menu/items", response_model=list[MenuItemOut])
+def bulk_edit_menu_items(
+    location_id: str, body: BulkMenuUpdate, session: SessionDep, _: AdminDep
+) -> list[MenuItemOut]:
+    """Edit several items in one go (a price rise, switching a section off). All or none."""
+    items = bulk_update_items(
+        session,
+        location_id,
+        [(edit.id, edit.model_dump(exclude_unset=True, exclude={"id"})) for edit in body.updates],
+    )
+    session.commit()
     return [MenuItemOut.model_validate(item) for item in items]
 
 
@@ -92,6 +121,24 @@ def create_group(
     group = create_modifier_group(session, location_id=location_id, **body.model_dump())
     session.commit()
     return ModifierGroupOut.model_validate(group)
+
+
+@router.patch("/menu/modifier-groups/{group_id}", response_model=ModifierGroupOut)
+def patch_group(
+    group_id: str, body: ModifierGroupUpdate, session: SessionDep, _: AdminDep
+) -> ModifierGroupOut:
+    group = update_modifier_group(session, group_id, body.model_dump(exclude_unset=True))
+    session.commit()
+    return ModifierGroupOut.model_validate(group)
+
+
+@router.patch("/menu/modifiers/{modifier_id}", response_model=ModifierOut)
+def patch_modifier(
+    modifier_id: str, body: ModifierUpdate, session: SessionDep, _: AdminDep
+) -> ModifierOut:
+    modifier = update_modifier(session, modifier_id, body.model_dump(exclude_unset=True))
+    session.commit()
+    return ModifierOut.model_validate(modifier)
 
 
 @router.post(

@@ -48,10 +48,16 @@ def encode_ticket(ticket: KitchenTicket, rasterizer: Rasterizer | None = None) -
     out = bytearray()
     out += INIT
     out += ALIGN_CENTER + BOLD_ON + SIZE_DOUBLE
-    out += f"ORDER #{ticket.order_number}".encode("ascii") + LF
+    if ticket.void_reason is not None:
+        out += f"VOID #{ticket.order_number}".encode("ascii") + LF
+        out += SIZE_NORMAL + b"DO NOT MAKE" + LF
+    else:
+        out += f"ORDER #{ticket.order_number}".encode("ascii") + LF
     out += SIZE_NORMAL + BOLD_OFF + ALIGN_LEFT
     out += f"{ticket.channel} / {ticket.fulfillment}".encode("ascii") + LF
     out += ticket.business_date.isoformat().encode("ascii") + LF
+    if ticket.void_reason:
+        out += _render_line(f"Reason: {ticket.void_reason}", rasterizer)
     out += RULE + LF
     for line in ticket.lines:
         if line.is_modifier:

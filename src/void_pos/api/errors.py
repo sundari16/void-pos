@@ -26,7 +26,11 @@ def _validation_message(exc: RequestValidationError) -> str:
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(VoidPosError)
     async def _domain(_: Request, exc: VoidPosError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(exc.to_body()))
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=jsonable_encoder(exc.to_body()),
+            headers=getattr(exc, "headers", None),
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:

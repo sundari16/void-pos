@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -27,3 +27,8 @@ def local_date(timezone: str, at: datetime | None = None) -> date:
     """The calendar date at ``at`` (default: now) in ``timezone``. An order rung up at
     8am in Brisbane is still the 18th there, even though it is the 17th in UTC."""
     return as_aware(at or utcnow()).astimezone(ZoneInfo(timezone)).date()
+
+
+def local_time(timezone: str, at: datetime | None = None) -> time:
+    """The wall-clock time at ``at`` (default: now) in ``timezone``, without a zone."""
+    return as_aware(at or utcnow()).astimezone(ZoneInfo(timezone)).time()

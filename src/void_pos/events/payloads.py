@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..ids import Ulid
+from ..totals import total_cents
 from .types import EventType
 
 MAX_LINE_CENTS = 10_000_000  # $100,000 per line: a typo guard, not a business limit
@@ -64,7 +65,7 @@ def check_line_tree(lines: list[OrderLineIn]) -> None:
             raise ValueError(
                 f"modifier line {line.id} can't have its own seat or course; set them on its item"
             )
-    if sum(line.unit_price_cents * line.quantity for line in lines) < 0:
+    if total_cents(lines) < 0:
         raise ValueError("the order total can't be negative")
 
 
@@ -84,6 +85,10 @@ class OrderPlaced(_Payload):
 
 class OrderRef(_Payload):
     order_id: Ulid
+
+
+class OrderVoided(OrderRef):
+    reason: str | None = Field(default=None, max_length=200)
 
 
 class PaymentIn(_Payload):
@@ -111,7 +116,7 @@ class LoyaltyRecorded(_Payload):
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     EventType.ORDER_PLACED: OrderPlaced,
     EventType.ORDER_SENT: OrderRef,
-    EventType.ORDER_VOIDED: OrderRef,
+    EventType.ORDER_VOIDED: OrderVoided,
     EventType.ORDER_PAID: OrderPaid,
     EventType.LOYALTY_RECORDED: LoyaltyRecorded,
 }

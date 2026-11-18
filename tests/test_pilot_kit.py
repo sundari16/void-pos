@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -148,8 +148,9 @@ def test_a_non_utf8_sheet_gets_a_clear_hint(
 
 
 @pytest.fixture
-def printer() -> Iterator[tuple[int, bytearray]]:
-    """A stand-in for a network ESC/POS printer: accepts one job on a local port."""
+def printer() -> Iterator[tuple[int, Callable[[], bytes]]]:
+    """A stand-in for a network ESC/POS printer: accepts one job on a local port. The
+    second value waits for the job to finish arriving and returns it."""
     received = bytearray()
     server = socket.create_server(("127.0.0.1", 0))
     port = server.getsockname()[1]
@@ -160,21 +161,26 @@ def printer() -> Iterator[tuple[int, bytearray]]:
             while chunk := conn.recv(65536):
                 received.extend(chunk)
 
+    def job() -> bytes:
+        thread.join(timeout=5)
+        return bytes(received)
+
     thread = threading.Thread(target=accept, daemon=True)
     thread.start()
-    yield port, received
+    yield port, job
     thread.join(timeout=5)
     server.close()
 
 
 def test_print_test_reaches_the_printer(
-    printer: tuple[int, bytearray], capsys: pytest.CaptureFixture[str]
+    printer: tuple[int, Callable[[], bytes]], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    port, received = printer
+    port, job = printer
     assert main(["print-test", "--host", "127.0.0.1", "--port", str(port)]) == 0
     out = capsys.readouterr().out
     assert f"test ticket to 127.0.0.1:{port}" in out
     assert "No font set" in out  # the Tamil line needs a font to print properly
+    received = job()
     assert received.startswith(b"\x1b@") and b"ORDER #0" in received
 
 

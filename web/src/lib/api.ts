@@ -7,12 +7,14 @@ import type {
   CommandIn,
   DeviceSession,
   KitchenResponse,
-  MenuItem,
   OrderResponse,
   PairResponse,
   PayRequest,
   PaymentResponse,
   PlaceOrderRequest,
+  TillMenu,
+  VoidRequest,
+  VoidResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -85,14 +87,17 @@ export function createApi(fetchImpl: Fetch = (input, init) => fetch(input, init)
     me(token: string): Promise<DeviceSession> {
       return request("/devices/me", { token });
     },
-    listMenuItems(token: string, locationId: string): Promise<MenuItem[]> {
-      return request(`/locations/${locationId}/menu/items`, { token });
+    tillMenu(token: string, locationId: string): Promise<TillMenu> {
+      return request(`/locations/${locationId}/menu`, { token });
     },
     placeOrder(token: string, body: PlaceOrderRequest): Promise<OrderResponse> {
       return request("/orders", { method: "POST", token, body });
     },
     sendToKitchen(token: string, orderId: string, body: CommandIn): Promise<KitchenResponse> {
       return request(`/orders/${orderId}/send-to-kitchen`, { method: "POST", token, body });
+    },
+    voidOrder(token: string, orderId: string, body: VoidRequest): Promise<VoidResponse> {
+      return request(`/orders/${orderId}/void`, { method: "POST", token, body });
     },
     payOrder(token: string, orderId: string, body: PayRequest): Promise<PaymentResponse> {
       return request(`/orders/${orderId}/pay`, { method: "POST", token, body });

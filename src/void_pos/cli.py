@@ -4,6 +4,7 @@
     void-pos add-device --location <id> --name "Till 1" --range 1000-1999
     void-pos pairing-code --device <id>
     void-pos import-menu --location <id> --file menu.csv [--dry-run]
+    void-pos import-modifiers --location <id> --file modifiers.csv [--dry-run]
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -37,6 +38,7 @@ from .devices import (
 )
 from .errors import VoidPosError
 from .menu.importer import import_menu, parse_menu_csv
+from .menu.modifier_import import import_modifiers, parse_modifier_csv
 from .models import Device
 from .printing import (
     KitchenTicket,
@@ -92,6 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--location", required=True)
     imp.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
     imp.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+
+    mods = sub.add_parser(
+        "import-modifiers", help="create or update modifier groups from a CSV file"
+    )
+    mods.add_argument("--location", required=True)
+    mods.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
+    mods.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
 
     pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
     pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
@@ -163,6 +172,20 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         lines = [summary]
         lines += [f"  + {name}" for name in result.created]
         lines += [f"  ~ {name}" for name in result.updated]
+        return "\n".join(lines)
+    if args.command == "import-modifiers":
+        get_location(session, args.location)
+        groups = parse_modifier_csv(_read_text(args.file))
+        mod_result = import_modifiers(session, args.location, groups, dry_run=args.dry_run)
+        verb = "Would" if args.dry_run else "Did"
+        summary = (
+            f"{verb} create {len(mod_result.created)}, update {len(mod_result.updated)}, "
+            f"attach {len(mod_result.attached)}, leave {len(mod_result.unchanged)} unchanged."
+        )
+        lines = [summary]
+        lines += [f"  + {name}" for name in mod_result.created]
+        lines += [f"  ~ {name}" for name in mod_result.updated]
+        lines += [f"  = {link}" for link in mod_result.attached]
         return "\n".join(lines)
     raise AssertionError(args.command)
 

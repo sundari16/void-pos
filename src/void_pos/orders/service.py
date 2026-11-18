@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import local_date
@@ -12,14 +13,22 @@ from ..commands import Command, ensure_seq_free, find_replay, record
 from ..devices import get_location
 from ..errors import Conflict, NotFound
 from ..events import EventType, OrderPlaced
-from ..events.types import VOIDED
-from ..models import Device, Order
+from ..events.types import PAID, SENT, VOIDED
+from ..models import Device, Order, Payment
 from ..printing import Printer, Rasterizer, print_order
+from .rules import check_order_lines
 
 
 @dataclass(frozen=True)
 class OrderOutcome:
     order: Order
+    replayed: bool
+
+
+@dataclass(frozen=True)
+class VoidOutcome:
+    order: Order
+    printed: bool
     replayed: bool
 
 
@@ -51,8 +60,8 @@ def place_order(
     *,
     business_date: date | None = None,
 ) -> OrderOutcome:
-    """Place ``order`` as an ``order.placed`` event. The business date defaults to today
-    in the location's own timezone."""
+    """Place ``order`` as an ``order.placed`` event, if it follows the menu's rules (see
+    ``rules``). The business date defaults to today in the location's own timezone."""
     if find_replay(
         session, command, device=device, event_type=EventType.ORDER_PLACED, order_id=order.order_id
     ):
@@ -61,7 +70,9 @@ def place_order(
     if session.get(Order, order.order_id) is not None:
         raise Conflict("an order with this id already exists", code="order_exists")
 
-    day = business_date or local_date(get_location(session, device.location_id).timezone)
+    location = get_location(session, device.location_id)
+    check_order_lines(session, location, order.lines)
+    day = business_date or local_date(location.timezone)
     payload = order.model_dump(mode="json", include=set(OrderPlaced.model_fields))
     record(
         session,
@@ -112,3 +123,49 @@ def send_to_kitchen(
     if data is None:
         return KitchenOutcome(order, printed=False, ticket_bytes=0, replayed=False)
     return KitchenOutcome(order, printed=True, ticket_bytes=len(data), replayed=False)
+
+
+def void_order(
+    session: Session,
+    device: Device,
+    order_id: str,
+    command: Command,
+    *,
+    reason: str,
+    printer: Printer | None,
+    rasterizer: Rasterizer | None = None,
+) -> VoidOutcome:
+    """Record ``order.voided``. An order with payments is refused (refund first), and so
+    is one already voided. If the kitchen has the order, a VOID ticket prints first, so
+    a printer that can't be reached leaves nothing recorded and the till can retry."""
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    if find_replay(
+        session, command, device=device, event_type=EventType.ORDER_VOIDED, order_id=order_id
+    ):
+        return VoidOutcome(order, printed=False, replayed=True)
+    if order.state == VOIDED:
+        raise Conflict("this order is already voided", code="order_voided")
+    paid = session.scalar(
+        select(func.count())
+        .select_from(Payment)
+        .where(Payment.order_id == order_id, Payment.status == "captured")
+    )
+    if order.state == PAID or paid:
+        raise Conflict(
+            "this order has a payment; refund it before voiding", code="order_paid"
+        )
+
+    ensure_seq_free(session, device, command)
+    printed = False
+    if order.state == SENT and printer is not None:
+        print_order(session, order_id, printer, rasterizer, void_reason=reason)
+        printed = True
+    record(
+        session,
+        device,
+        command,
+        event_type=EventType.ORDER_VOIDED,
+        payload={"order_id": order_id, "reason": reason},
+        business_date=order.business_date,
+    )
+    return VoidOutcome(order, printed=printed, replayed=False)

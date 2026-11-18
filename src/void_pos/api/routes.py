@@ -13,8 +13,15 @@ from ..commands import Command
 from ..devices import get_location
 from ..export import export_csv, export_location
 from ..models import Order
-from ..orders import get_order, place_order, send_to_kitchen
-from ..payments import CashProvider, ExternalProvider, PaymentProvider, order_total_cents, pay_order
+from ..orders import get_order, place_order, send_to_kitchen, void_order
+from ..payments import (
+    CashProvider,
+    ExternalProvider,
+    PaymentProvider,
+    balance_cents,
+    order_total_cents,
+    pay_order,
+)
 from ..printing import Printer, Rasterizer
 from ..reporting import shift_closeout
 from ..sync import MAX_PULL, pull_events, push_events
@@ -32,6 +39,8 @@ from .schemas import (
     PullResponse,
     PushRequest,
     PushResponse,
+    VoidRequest,
+    VoidResponse,
 )
 
 router = APIRouter()
@@ -52,6 +61,7 @@ def _order_response(session: Session, order: Order, *, replayed: bool) -> OrderR
         state=order.state,
         business_date=order.business_date,
         total_cents=order_total_cents(session, order.id),
+        balance_cents=balance_cents(session, order.id),
         replayed=replayed,
     )
 
@@ -91,6 +101,33 @@ def send_to_kitchen_route(
     )
 
 
+@router.post("/orders/{order_id}/void", response_model=VoidResponse, tags=["orders"])
+def void_route(
+    order_id: str,
+    body: VoidRequest,
+    session: SessionDep,
+    device: DeviceDep,
+    printer: PrinterDep,
+    rasterizer: RasterizerDep,
+) -> VoidResponse:
+    outcome = void_order(
+        session,
+        device,
+        order_id,
+        _command(body),
+        reason=body.reason,
+        printer=printer,
+        rasterizer=rasterizer,
+    )
+    session.commit()
+    return VoidResponse(
+        order_id=order_id,
+        state=outcome.order.state,
+        printed=outcome.printed,
+        replayed=outcome.replayed,
+    )
+
+
 @router.post("/orders/{order_id}/pay", response_model=PaymentResponse, tags=["orders"])
 def pay_route(
     order_id: str, body: PayRequest, session: SessionDep, device: DeviceDep
@@ -120,6 +157,7 @@ def pay_route(
         currency=payment.currency,
         status=payment.status,
         order_state=outcome.order.state,
+        balance_cents=outcome.balance_cents,
         replayed=outcome.replayed,
     )
 

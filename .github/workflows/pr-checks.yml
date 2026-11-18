@@ -93,11 +93,11 @@ jobs:
       - name: Smoke test through the web till's /api proxy
         run: |
           set -a; . ./.env; set +a
-          python scripts/smoke_test.py --api http://localhost:3000/api --admin-token "$VOIDPOS_ADMIN_TOKEN"
+          python scripts/smoke_test.py --api http://localhost:3000/api
       - name: Smoke test against the API directly
         run: |
           set -a; . ./.env; set +a
-          python scripts/smoke_test.py --api http://localhost:8000 --admin-token "$VOIDPOS_ADMIN_TOKEN"
+          python scripts/smoke_test.py --api http://localhost:8000
       - name: The backup service wrote a dump
         run: |
           for i in $(seq 1 30); do ls backups/void_pos-*.dump >/dev/null 2>&1 && break; sleep 2; done
@@ -109,6 +109,8 @@ jobs:
           LOC=$(docker compose exec -T api void-pos list-locations | head -1 | cut -d' ' -f1)
           docker compose exec -T api void-pos import-menu --location "$LOC" --file - < docs/menu-template.csv
           docker compose exec -T api void-pos import-menu --location "$LOC" --file - < docs/menu-template.csv | grep "leave 3 unchanged"
+          docker compose exec -T api void-pos import-modifiers --location "$LOC" --file - < docs/modifier-template.csv
+          docker compose exec -T api void-pos import-modifiers --location "$LOC" --file - < docs/modifier-template.csv | grep "attach 0, leave 8 unchanged"
       - name: Logs
         if: failure()
         run: docker compose logs --no-color
