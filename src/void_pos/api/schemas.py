@@ -15,7 +15,7 @@ from pydantic import (
 from ..clock import as_aware
 from ..events.payloads import CURRENCY_PATTERN, MAX_LINE_CENTS, OrderPlaced
 from ..ids import Ulid
-from ..models import Device, Location
+from ..models import Device, Location, MenuChange
 
 # --- till commands ----------------------------------------------------------------
 
@@ -192,6 +192,34 @@ class ModifierOut(BaseModel):
     name: str
     kitchen_name: str | None
     price_delta_cents: int
+
+
+class MenuChangeOut(BaseModel):
+    id: str
+    number: int
+    entity: str
+    entity_id: str
+    action: str
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    reverts_id: str | None
+    actor: str
+    changed_at: datetime
+
+    @classmethod
+    def of(cls, change: MenuChange) -> MenuChangeOut:
+        return cls(
+            id=change.id,
+            number=change.number,
+            entity=change.entity,
+            entity_id=change.entity_id,
+            action=change.action,
+            before=change.before,
+            after=change.after,
+            reverts_id=change.reverts_id,
+            actor=change.actor,
+            changed_at=as_aware(change.created_at),
+        )
 
 
 # --- venue setup and pairing -------------------------------------------------------

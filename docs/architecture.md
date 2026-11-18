@@ -29,7 +29,8 @@ a socket straight to the kitchen printer.
 | `src/void_pos/orders/`, `payments/` | Place order, send to kitchen, pay (provider seam: cash, external; Stripe Connect is commercial) |
 | `src/void_pos/sync/` | Device push and cursor pull, scoped to a location |
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
-| `src/void_pos/menu/`, `reporting/`, `export/`, `printing/` | Catalog, closeouts, full export, ESC/POS tickets |
+| `src/void_pos/menu/` | Catalog; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
+| `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |
 | `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested) |

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from ..menu import (
@@ -14,12 +14,15 @@ from ..menu import (
     create_modifier_group,
     delete_item,
     get_item,
+    list_changes,
     list_items,
+    revert_change,
     update_item,
 )
 from .auth import AdminDep, PrincipalDep
 from .deps import get_session
 from .schemas import (
+    MenuChangeOut,
     MenuItemIn,
     MenuItemOut,
     MenuItemUpdate,
@@ -111,3 +114,22 @@ def create_group_modifier(
 def attach_group(item_id: str, group_id: str, session: SessionDep, _: AdminDep) -> None:
     attach_modifier_group(session, menu_item_id=item_id, modifier_group_id=group_id)
     session.commit()
+
+
+@router.get("/locations/{location_id}/menu/changes", response_model=list[MenuChangeOut])
+def menu_changes(
+    location_id: str,
+    session: SessionDep,
+    _: AdminDep,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> list[MenuChangeOut]:
+    """The menu's change history, newest first."""
+    return [MenuChangeOut.of(c) for c in list_changes(session, location_id, limit=limit)]
+
+
+@router.post("/menu/changes/{change_id}/revert", response_model=MenuChangeOut)
+def revert_menu_change(change_id: str, session: SessionDep, _: AdminDep) -> MenuChangeOut:
+    """Undo the latest change to an item, group or modifier; returns the undo's record."""
+    change = revert_change(session, change_id)
+    session.commit()
+    return MenuChangeOut.of(change)

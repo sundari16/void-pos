@@ -2,22 +2,28 @@
 
 The menu is server-authoritative reference data. True delete is safe because every order
 line snapshots the name/price/tax/category at sale time, so removing an item never
-corrupts order history — we simply null the (now redundant) line references. Offline menu
-edits and change-history/revert are later refinements.
+corrupts order history — we simply null the (now redundant) line references. Every edit
+is recorded in the menu's change history and the latest one can be reverted (see
+``history``). Offline menu edits are a later refinement.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import InvalidRequest, NotFound
-from ..models import Location, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup, OrderLine
-
-_ITEM_FIELDS = frozenset(
-    {"name", "base_price_cents", "kitchen_name", "category", "tax_rate", "is_available"}
+from ..models import Location, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
+from .history import (
+    ITEM_FIELDS,
+    group_snapshot,
+    item_snapshot,
+    item_values,
+    modifier_snapshot,
+    record,
+    remove_item_row,
 )
 
 
@@ -44,6 +50,14 @@ def create_item(
     )
     session.add(item)
     session.flush()
+    record(
+        session,
+        location_id=location_id,
+        entity="menu_item",
+        entity_id=item.id,
+        action="create",
+        after=item_snapshot(session, item),
+    )
     return item
 
 
@@ -67,26 +81,42 @@ def list_items(session: Session, location_id: str, *, include_deleted: bool = Fa
 
 
 def update_item(session: Session, item_id: str, fields: dict[str, Any]) -> MenuItem:
+    """Apply the given fields; only the ones that actually change are recorded."""
     item = get_item(session, item_id)
+    old = item_values(item)
     for key, value in fields.items():
-        if key in _ITEM_FIELDS:
+        if key in ITEM_FIELDS:
             setattr(item, key, value)
     session.flush()
+    new = item_values(item)
+    changed = [field for field in ITEM_FIELDS if old[field] != new[field]]
+    if changed:
+        record(
+            session,
+            location_id=item.location_id,
+            entity="menu_item",
+            entity_id=item.id,
+            action="update",
+            before={field: old[field] for field in changed},
+            after={field: new[field] for field in changed},
+        )
     return item
 
 
 def delete_item(session: Session, item_id: str) -> None:
     """True delete: history is preserved by the order-line snapshots, so null the line
-    references and remove the item for real (not a soft hide)."""
+    references and remove the item for real (not a soft hide). Revertible."""
     item = get_item(session, item_id)
-    session.execute(
-        delete(MenuItemModifierGroup).where(MenuItemModifierGroup.menu_item_id == item_id)
+    before = item_snapshot(session, item)
+    remove_item_row(session, item)
+    record(
+        session,
+        location_id=before["location_id"],
+        entity="menu_item",
+        entity_id=item_id,
+        action="delete",
+        before=before,
     )
-    session.execute(
-        update(OrderLine).where(OrderLine.menu_item_id == item_id).values(menu_item_id=None)
-    )
-    session.delete(item)
-    session.flush()
 
 
 def create_modifier_group(
@@ -103,6 +133,14 @@ def create_modifier_group(
     )
     session.add(group)
     session.flush()
+    record(
+        session,
+        location_id=location_id,
+        entity="modifier_group",
+        entity_id=group.id,
+        action="create",
+        after=group_snapshot(group),
+    )
     return group
 
 
@@ -114,13 +152,22 @@ def create_modifier(
     price_delta_cents: int = 0,
     kitchen_name: str | None = None,
 ) -> Modifier:
-    if session.get(ModifierGroup, group_id) is None:
+    group = session.get(ModifierGroup, group_id)
+    if group is None:
         raise NotFound("modifier group not found")
     modifier = Modifier(
         group_id=group_id, name=name, price_delta_cents=price_delta_cents, kitchen_name=kitchen_name
     )
     session.add(modifier)
     session.flush()
+    record(
+        session,
+        location_id=group.location_id,
+        entity="modifier",
+        entity_id=modifier.id,
+        action="create",
+        after=modifier_snapshot(modifier),
+    )
     return modifier
 
 
@@ -138,3 +185,11 @@ def attach_modifier_group(session: Session, *, menu_item_id: str, modifier_group
             MenuItemModifierGroup(menu_item_id=menu_item_id, modifier_group_id=modifier_group_id)
         )
         session.flush()
+        record(
+            session,
+            location_id=item.location_id,
+            entity="menu_item",
+            entity_id=item.id,
+            action="attach",
+            after={"modifier_group_id": modifier_group_id},
+        )

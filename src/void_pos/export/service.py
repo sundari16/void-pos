@@ -21,6 +21,7 @@ from ..models import (
     Customer,
     Location,
     LoyaltyLedger,
+    MenuChange,
     MenuItem,
     Modifier,
     ModifierGroup,
@@ -59,6 +60,11 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
         select(LoyaltyLedger).where(LoyaltyLedger.location_id == location_id)
     ).all()
     customers = session.scalars(select(Customer).where(Customer.location_id == location_id)).all()
+    changes = session.scalars(
+        select(MenuChange)
+        .where(MenuChange.location_id == location_id)
+        .order_by(MenuChange.number)
+    ).all()
 
     balances: dict[str, int] = defaultdict(int)
     for entry in ledger:
@@ -96,6 +102,7 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
             for o in orders
         ],
         "loyalty_ledger": [_ledger_entry(e) for e in ledger],
+        "menu_changes": [_menu_change(c) for c in changes],
     }
 
 
@@ -220,4 +227,18 @@ def _ledger_entry(e: LoyaltyLedger) -> dict[str, Any]:
         "order_id": e.order_id,
         "points_delta": e.points_delta,
         "reason": e.reason,
+    }
+
+
+def _menu_change(c: MenuChange) -> dict[str, Any]:
+    return {
+        "number": c.number,
+        "entity": c.entity,
+        "entity_id": c.entity_id,
+        "action": c.action,
+        "before": c.before,
+        "after": c.after,
+        "reverts_id": c.reverts_id,
+        "actor": c.actor,
+        "changed_at": c.created_at.isoformat(),
     }

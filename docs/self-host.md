@@ -68,6 +68,11 @@ The same setup is available over HTTP under `/admin` with
 Add menu items with the admin token (`POST /locations/{id}/menu/items`, see `/docs`). Tills
 read their own location's menu; only the admin token can change it.
 
+Every menu edit is recorded: `GET /locations/{id}/menu/changes` lists them newest first, and
+`POST /menu/changes/{change_id}/revert` undoes the latest change to an item, group or
+modifier (a deleted item comes back with its modifier groups). An undo is recorded too, so
+it can be undone in turn.
+
 ## Kitchen printer
 
 Network ESC/POS printers listen on port 9100. Set its address in `.env` and restart:
