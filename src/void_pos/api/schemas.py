@@ -14,7 +14,13 @@ from pydantic import (
 )
 
 from ..clock import as_aware
-from ..events.payloads import CURRENCY_PATTERN, MAX_LINE_CENTS, OrderPlaced
+from ..events.payloads import (
+    CURRENCY_PATTERN,
+    MAX_LINE_CENTS,
+    OrderLineIn,
+    OrderPlaced,
+    check_line_tree,
+)
 from ..ids import Ulid
 from ..menu.service import TillMenu
 from ..models import Device, Location, MenuChange, OrderLine, Payment
@@ -140,6 +146,17 @@ class OrderResponse(OrderSummary):
         )
 
 
+class AddLinesRequest(CommandIn):
+    """More items for a placed order: new item lines with their modifiers."""
+
+    lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _line_tree(self) -> AddLinesRequest:
+        check_line_tree(self.lines)
+        return self
+
+
 class KitchenRequest(CommandIn):
     pass
 
@@ -149,6 +166,7 @@ class KitchenResponse(BaseModel):
     state: str
     printed: bool  # false when no kitchen printer is configured, or on a replay
     ticket_bytes: int
+    lines_sent: int  # lines the kitchen hadn't had; 0 means the ticket was a reprint
     replayed: bool = False
 
 

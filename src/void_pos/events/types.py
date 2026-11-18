@@ -5,6 +5,7 @@ class EventType:
     """The event vocabulary the order pipeline understands."""
 
     ORDER_PLACED = "order.placed"
+    ORDER_LINES_ADDED = "order.lines_added"  # more items onto an open order
     ORDER_SENT = "order.sent"
     ORDER_PAID = "order.paid"
     ORDER_VOIDED = "order.voided"

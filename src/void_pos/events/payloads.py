@@ -88,6 +88,26 @@ class OrderRef(_Payload):
     order_id: Ulid
 
 
+class OrderLinesAdded(_Payload):
+    """More items for an order already placed (a table orders dessert). New item lines,
+    each with its own modifiers; the lines already on the order don't change."""
+
+    order_id: Ulid
+    lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _line_tree(self) -> OrderLinesAdded:
+        check_line_tree(self.lines)
+        return self
+
+
+class OrderSent(OrderRef):
+    """The kitchen got these lines. Without ``line_ids`` (older tills): every line it
+    hadn't had yet."""
+
+    line_ids: list[Ulid] | None = Field(default=None, max_length=1000)
+
+
 class OrderVoided(OrderRef):
     reason: str | None = Field(default=None, max_length=200)
     approved_by: Ulid | None = None  # the manager whose PIN approved it
@@ -118,7 +138,8 @@ class LoyaltyRecorded(_Payload):
 
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     EventType.ORDER_PLACED: OrderPlaced,
-    EventType.ORDER_SENT: OrderRef,
+    EventType.ORDER_LINES_ADDED: OrderLinesAdded,
+    EventType.ORDER_SENT: OrderSent,
     EventType.ORDER_VOIDED: OrderVoided,
     EventType.ORDER_PAID: OrderPaid,
     EventType.LOYALTY_RECORDED: LoyaltyRecorded,

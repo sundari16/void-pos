@@ -23,10 +23,16 @@ class KitchenTicket:
     business_date: date
     lines: list[TicketLine]
     void_reason: str | None = None  # set: this ticket cancels the order in the kitchen
+    heading: str = "ORDER"  # ADDED for items added later, REPRINT for a copy
+    table_label: str | None = None
 
 
 def build_kitchen_ticket(
-    order: Order, lines: Iterable[OrderLine], *, void_reason: str | None = None
+    order: Order,
+    lines: Iterable[OrderLine],
+    *,
+    void_reason: str | None = None,
+    heading: str = "ORDER",
 ) -> KitchenTicket:
     """Group modifier child lines under their parent item, preferring the kitchen-facing
     name (any script) over the customer-facing one."""
@@ -63,4 +69,6 @@ def build_kitchen_ticket(
         business_date=order.business_date,
         lines=ticket_lines,
         void_reason=void_reason,
+        heading=heading,
+        table_label=order.table_label,
     )

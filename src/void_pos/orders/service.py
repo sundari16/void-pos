@@ -13,8 +13,9 @@ from ..commands import Command, ensure_seq_free, find_replay, record
 from ..devices import get_location
 from ..errors import Conflict, NotFound
 from ..events import EventType, OrderPlaced
+from ..events.payloads import OrderLineIn
 from ..events.types import PAID, SENT, VOIDED
-from ..models import Device, Order, Payment, Staff
+from ..models import Device, Order, OrderLine, Payment, Staff
 from ..printing import Printer, Rasterizer, print_order
 from .rules import check_order_lines
 
@@ -38,6 +39,7 @@ class KitchenOutcome:
     printed: bool
     ticket_bytes: int
     replayed: bool
+    lines_sent: int = 0  # 0: nothing new, so the ticket was a reprint
 
 
 def get_order(
@@ -85,6 +87,38 @@ def place_order(
     return OrderOutcome(get_order(session, order.order_id), replayed=False)
 
 
+def add_lines(
+    session: Session, device: Device, order_id: str, command: Command, lines: list[OrderLineIn]
+) -> OrderOutcome:
+    """Record ``order.lines_added``: more items for an open or sent order, checked against
+    the menu like a new order. A paid order is closed (start a new one); a part-paid one
+    takes more items and its balance grows."""
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    if find_replay(
+        session, command, device=device, event_type=EventType.ORDER_LINES_ADDED, order_id=order_id
+    ):
+        return OrderOutcome(order, replayed=True)
+    if order.state == VOIDED:
+        raise Conflict("this order is voided", code="order_voided")
+    if order.state == PAID:
+        raise Conflict(
+            "this order is paid; start a new one", code="order_closed", order_state=order.state
+        )
+    ids = [line.id for line in lines]
+    if session.scalar(select(OrderLine.id).where(OrderLine.id.in_(ids)).limit(1)) is not None:
+        raise Conflict("one of these line ids is already used", code="line_exists")
+    check_order_lines(session, get_location(session, device.location_id), lines)
+    record(
+        session,
+        device,
+        command,
+        event_type=EventType.ORDER_LINES_ADDED,
+        payload={"order_id": order_id, "lines": [line.model_dump(mode="json") for line in lines]},
+        business_date=order.business_date,
+    )
+    return OrderOutcome(order, replayed=False)
+
+
 def send_to_kitchen(
     session: Session,
     device: Device,
@@ -94,10 +128,12 @@ def send_to_kitchen(
     printer: Printer | None,
     rasterizer: Rasterizer | None = None,
 ) -> KitchenOutcome:
-    """Record ``order.sent`` and print the kitchen ticket.
+    """Record ``order.sent`` and print the kitchen ticket for the lines the kitchen hasn't
+    had: the whole order the first time, then just the items added since ("ADDED").
 
-    Sending again reprints, and a paid order still prints (counter service takes payment
-    first); only a voided order is refused. A replayed command does not reprint. The
+    With nothing new, sending again reprints the whole order. A paid order still prints
+    (counter service takes payment first); only a voided order is refused. A replayed
+    command does not reprint. The
     ticket prints before the event is written: if the printer can't be reached nothing
     is recorded and the till can simply retry, and the event's flush-to-commit window
     stays as short as any other command's (sync pull orders events by arrival).
@@ -111,18 +147,34 @@ def send_to_kitchen(
         raise Conflict("this order is voided", code="order_voided")
 
     ensure_seq_free(session, device, command)
-    data = print_order(session, order_id, printer, rasterizer) if printer is not None else None
+    lines = session.scalars(select(OrderLine).where(OrderLine.order_id == order_id)).all()
+    unsent = [line.id for line in lines if line.sent_at is None]
+    if not unsent:
+        heading, only = "REPRINT", None
+    elif len(unsent) == len(lines):
+        heading, only = "ORDER", None
+    else:
+        heading, only = "ADDED", unsent
+    data = (
+        print_order(session, order_id, printer, rasterizer, line_ids=only, heading=heading)
+        if printer is not None
+        else None
+    )
     record(
         session,
         device,
         command,
         event_type=EventType.ORDER_SENT,
-        payload={"order_id": order_id},
+        payload={"order_id": order_id, "line_ids": unsent},
         business_date=order.business_date,
     )
-    if data is None:
-        return KitchenOutcome(order, printed=False, ticket_bytes=0, replayed=False)
-    return KitchenOutcome(order, printed=True, ticket_bytes=len(data), replayed=False)
+    return KitchenOutcome(
+        order,
+        printed=data is not None,
+        ticket_bytes=len(data) if data is not None else 0,
+        replayed=False,
+        lines_sent=len(unsent),
+    )
 
 
 def void_order(

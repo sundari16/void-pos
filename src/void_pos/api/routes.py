@@ -15,6 +15,7 @@ from ..export import export_csv, export_location
 from ..models import Order
 from ..orders import (
     UNSETTLED,
+    add_lines,
     get_order,
     list_orders,
     order_view,
@@ -37,6 +38,7 @@ from .auth import AdminDep, DeviceDep, PrincipalDep
 from .deps import get_printer, get_rasterizer, get_session
 from .schemas import (
     Ack,
+    AddLinesRequest,
     CommandIn,
     KitchenRequest,
     KitchenResponse,
@@ -99,6 +101,16 @@ def read_orders(
     return [OrderSummary.of(view) for view in order_views(session, orders)]
 
 
+@router.post("/orders/{order_id}/lines", response_model=OrderResponse, tags=["orders"])
+def add_lines_route(
+    order_id: str, body: AddLinesRequest, session: SessionDep, device: DeviceDep
+) -> OrderResponse:
+    """Add items to a placed order; send to the kitchen again to print just those."""
+    outcome = add_lines(session, device, order_id, _command(body), body.lines)
+    session.commit()
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
 @router.get("/orders/{order_id}", response_model=OrderResponse, tags=["orders"])
 def read_order(order_id: str, session: SessionDep, principal: PrincipalDep) -> OrderResponse:
     order = get_order(session, order_id, location_id=principal.location_id)
@@ -123,6 +135,7 @@ def send_to_kitchen_route(
         state=outcome.order.state,
         printed=outcome.printed,
         ticket_bytes=outcome.ticket_bytes,
+        lines_sent=outcome.lines_sent,
         replayed=outcome.replayed,
     )
 

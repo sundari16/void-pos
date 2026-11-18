@@ -22,7 +22,9 @@ from .events import ApplyResult, ingest_event
 from .models import Device, Event
 
 # Refusals that clash with what is already recorded, rather than malformed input.
-_CONFLICTS = frozenset({"seq_conflict", "order_exists", "order_number_used", "foreign_order"})
+_CONFLICTS = frozenset(
+    {"seq_conflict", "order_exists", "order_number_used", "foreign_order", "line_exists"}
+)
 
 
 @dataclass(frozen=True)
