@@ -5,6 +5,7 @@ from __future__ import annotations
 from .history import list_changes, revert_change
 from .service import (
     attach_modifier_group,
+    bulk_update_items,
     create_item,
     create_modifier,
     create_modifier_group,
@@ -22,6 +23,7 @@ from .service import (
 
 __all__ = [
     "attach_modifier_group",
+    "bulk_update_items",
     "create_item",
     "create_modifier",
     "create_modifier_group",

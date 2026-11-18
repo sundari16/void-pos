@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import local_time
-from ..errors import InvalidRequest, NotFound
+from ..errors import InvalidRequest, NotFound, VoidPosError
 from ..models import Location, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
 from .availability import check_window, in_window
 from .history import (
@@ -99,6 +99,41 @@ def update_item(session: Session, item_id: str, fields: dict[str, Any]) -> MenuI
     item = get_item(session, item_id)
     _update(session, item, "menu_item", item.location_id, fields, ITEM_FIELDS, item_values)
     return item
+
+
+def bulk_update_items(
+    session: Session, location_id: str, updates: list[tuple[str, dict[str, Any]]]
+) -> list[MenuItem]:
+    """Apply several item edits as one: every item must be on the location's menu and
+    every edit must be valid, or nothing changes (the caller doesn't commit). Each item's
+    edit is its own entry in the change history, so it can be reverted on its own."""
+    _require_location(session, location_id)
+    ids = [item_id for item_id, _ in updates]
+    if len(set(ids)) != len(ids):
+        raise InvalidRequest("list each item once", code="duplicate_item")
+    items = {
+        item.id: item
+        for item in session.scalars(
+            select(MenuItem).where(
+                MenuItem.id.in_(ids),
+                MenuItem.location_id == location_id,
+                MenuItem.deleted_at.is_(None),
+            )
+        )
+    }
+    missing = [item_id for item_id in ids if item_id not in items]
+    if missing:
+        raise NotFound(
+            f"{len(missing)} of the items aren't on this location's menu", item_ids=missing
+        )
+    for item_id, fields in updates:
+        try:
+            update_item(session, item_id, fields)
+        except VoidPosError as exc:
+            exc.message = f"{items[item_id].name}: {exc.message}"
+            exc.extra["item_id"] = item_id
+            raise
+    return [items[item_id] for item_id in ids]
 
 
 def _update(

@@ -179,6 +179,16 @@ class MenuItemUpdate(BaseModel):
         return self
 
 
+class MenuItemEdit(MenuItemUpdate):
+    id: Ulid
+
+
+class BulkMenuUpdate(BaseModel):
+    """Edits to several items at once: all of them apply, or none do."""
+
+    updates: list[MenuItemEdit] = Field(min_length=1, max_length=500)
+
+
 class MenuItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

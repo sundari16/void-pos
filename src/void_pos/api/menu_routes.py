@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..menu import (
     attach_modifier_group,
+    bulk_update_items,
     create_item,
     create_modifier,
     create_modifier_group,
@@ -25,6 +26,7 @@ from ..menu import (
 from .auth import AdminDep, PrincipalDep
 from .deps import get_session
 from .schemas import (
+    BulkMenuUpdate,
     MenuChangeOut,
     MenuItemIn,
     MenuItemOut,
@@ -69,6 +71,20 @@ def list_menu_items(
 ) -> list[MenuItemOut]:
     principal.require_location(location_id)
     items = list_items(session, location_id, include_deleted=include_deleted)
+    return [MenuItemOut.model_validate(item) for item in items]
+
+
+@router.patch("/locations/{location_id}/menu/items", response_model=list[MenuItemOut])
+def bulk_edit_menu_items(
+    location_id: str, body: BulkMenuUpdate, session: SessionDep, _: AdminDep
+) -> list[MenuItemOut]:
+    """Edit several items in one go (a price rise, switching a section off). All or none."""
+    items = bulk_update_items(
+        session,
+        location_id,
+        [(edit.id, edit.model_dump(exclude_unset=True, exclude={"id"})) for edit in body.updates],
+    )
+    session.commit()
     return [MenuItemOut.model_validate(item) for item in items]
 
 
