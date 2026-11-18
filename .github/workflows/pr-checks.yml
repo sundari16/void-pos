@@ -104,6 +104,11 @@ jobs:
           ls -l backups/void_pos-*.dump
       - name: Setup CLI works in the container
         run: docker compose exec -T api void-pos list-locations
+      - name: Menu import from a spreadsheet, as the self-host guide shows
+        run: |
+          LOC=$(docker compose exec -T api void-pos list-locations | head -1 | cut -d' ' -f1)
+          docker compose exec -T api void-pos import-menu --location "$LOC" --file - < docs/menu-template.csv
+          docker compose exec -T api void-pos import-menu --location "$LOC" --file - < docs/menu-template.csv | grep "leave 3 unchanged"
       - name: Logs
         if: failure()
         run: docker compose logs --no-color

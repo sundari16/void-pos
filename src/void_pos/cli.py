@@ -3,6 +3,8 @@
     void-pos create-location --org "Madras Curry House" --name "Brisbane CBD"
     void-pos add-device --location <id> --name "Till 1" --range 1000-1999
     void-pos pairing-code --device <id>
+    void-pos import-menu --location <id> --file menu.csv [--dry-run]
+    void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
 migrated first (the API container does that on start; locally run ``alembic upgrade head``).
@@ -14,11 +16,13 @@ import argparse
 import sys
 from collections.abc import Sequence
 from datetime import timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from .clock import local_date
 from .config import settings
 from .devices import (
     PairingCode,
@@ -32,7 +36,18 @@ from .devices import (
     revoke_device,
 )
 from .errors import VoidPosError
+from .menu.importer import import_menu, parse_menu_csv
 from .models import Device
+from .printing import (
+    KitchenTicket,
+    NetworkPrinter,
+    PillowRasterizer,
+    TicketLine,
+    encode_ticket,
+    needs_image,
+)
+
+TEST_LINES = ("Print test", "மசாலா தோசை")  # Masala Dosa in Tamil: checks the font path
 
 
 def _range(text: str) -> tuple[int, int]:
@@ -72,6 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     rev = sub.add_parser("revoke-device", help="cut a till off immediately")
     rev.add_argument("--device", required=True)
+
+    imp = sub.add_parser("import-menu", help="create or update menu items from a CSV file")
+    imp.add_argument("--location", required=True)
+    imp.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
+    imp.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+
+    pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
+    pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
+    pt.add_argument("--port", type=int, help="defaults to VOIDPOS_KITCHEN_PRINTER_PORT (9100)")
+    pt.add_argument("--font", help="defaults to VOIDPOS_KITCHEN_FONT_PATH")
     return parser
 
 
@@ -126,25 +151,82 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
     if args.command == "revoke-device":
         device = revoke_device(session, args.device)
         return f"Revoked {device.name} at {device.revoked_at:%Y-%m-%d %H:%M} UTC"
+    if args.command == "import-menu":
+        get_location(session, args.location)
+        menu_rows = parse_menu_csv(_read_text(args.file))
+        result = import_menu(session, args.location, menu_rows, dry_run=args.dry_run)
+        verb = "Would" if args.dry_run else "Did"
+        summary = (
+            f"{verb} create {len(result.created)}, update {len(result.updated)}, "
+            f"leave {len(result.unchanged)} unchanged."
+        )
+        lines = [summary]
+        lines += [f"  + {name}" for name in result.created]
+        lines += [f"  ~ {name}" for name in result.updated]
+        return "\n".join(lines)
     raise AssertionError(args.command)
+
+
+def _read_text(path: str) -> str:
+    raw = sys.stdin.buffer.read() if path == "-" else Path(path).read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise VoidPosError(
+            "the file isn't UTF-8; in Excel use Save As > CSV UTF-8", code="invalid_menu_file"
+        ) from exc
+
+
+def print_test(args: argparse.Namespace) -> str:
+    """Send a test ticket (with a Tamil line) to the kitchen printer, without the database."""
+    host = args.host or settings.kitchen_printer_host
+    if not host:
+        raise VoidPosError("set VOIDPOS_KITCHEN_PRINTER_HOST or pass --host", code="no_printer")
+    port = args.port or settings.kitchen_printer_port
+    font = args.font or settings.kitchen_font_path
+    ticket = KitchenTicket(
+        order_number=0,
+        channel="test",
+        fulfillment="print test",
+        business_date=local_date("Australia/Brisbane"),
+        lines=[TicketLine(text=text, quantity=1, is_modifier=False) for text in TEST_LINES],
+    )
+    data = encode_ticket(ticket, rasterizer=PillowRasterizer(font) if font else None)
+    NetworkPrinter(host, port).send(data)
+    note = ""
+    if not font and any(needs_image(text) for text in TEST_LINES):
+        note = (
+            "\nNo font set: the Tamil line went as plain text and may print as garbage. "
+            "Set VOIDPOS_KITCHEN_FONT_PATH to a font with Tamil glyphs."
+        )
+    return f"Sent a {len(data)}-byte test ticket to {host}:{port}.{note}"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        output = print_test(args) if args.command == "print-test" else _with_database(args)
+    except VoidPosError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
+
+
+def _with_database(args: argparse.Namespace) -> str:
     engine = create_engine(args.database_url or settings.database_url)
     try:
         with Session(engine) as session:
             output = run(
                 session, args, pairing_ttl=timedelta(minutes=settings.pairing_code_ttl_minutes)
             )
-            session.commit()
-    except VoidPosError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
-        return 1
+            if getattr(args, "dry_run", False):
+                session.rollback()
+            else:
+                session.commit()
+        return output
     finally:
         engine.dispose()
-    print(output)
-    return 0
 
 
 if __name__ == "__main__":

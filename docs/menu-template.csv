@@ -1,0 +1,4 @@
+name,price,category,kitchen_name,tax_rate,is_available
+Masala Dosa,18.50,Mains,மசாலா தோசை,10%,yes
+Garlic Naan,4.50,Sides,,10%,yes
+Mango Lassi,6.50,Drinks,,10%,yes
