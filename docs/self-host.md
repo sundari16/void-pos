@@ -79,9 +79,27 @@ The dry run shows what would be created and updated. Items are matched by name, 
 price change just edit the sheet and import it again; items missing from the sheet are left
 alone. Every problem in the sheet is listed by row and nothing is applied until it's clean.
 
-Items can also be managed one at a time with the admin token (`POST
-/locations/{id}/menu/items`, see `/docs`). Tills read their own location's menu; only the
-admin token can change it.
+Modifier groups (spice level, extras) come from a second sheet, starting from
+[modifier-template.csv](modifier-template.csv): one row per modifier with `group`,
+`modifier` and `price` (the change in dollars, `0` for none, negative for a discount), and
+for the group `min` and `max` (how many the customer must and may pick), an optional
+`available_from` / `available_to` window, and `items`, the menu items it applies to
+separated by `;`. Import it after the menu, the same way:
+
+```bash
+docker compose exec -T api void-pos import-modifiers --location <location id> --file - --dry-run < modifiers.csv
+docker compose exec -T api void-pos import-modifiers --location <location id> --file - < modifiers.csv
+```
+
+Groups and modifiers match by name, so re-importing after a change updates them; nothing is
+removed or detached.
+
+Items can also be managed with the admin token (see `/docs`): one at a time
+(`POST /locations/{id}/menu/items`, `PATCH /menu/items/{id}`), or several at once with
+`PATCH /locations/{id}/menu/items` (a price rise, switching off a section), which applies
+every edit or none. An item can carry a daily window (`available_from` / `available_to`,
+local time, e.g. lunch only); outside it the till greys the item out. Tills read their own
+location's menu; only the admin token can change it.
 
 Every menu edit is recorded: `GET /locations/{id}/menu/changes` lists them newest first, and
 `POST /menu/changes/{change_id}/revert` undoes the latest change to an item, group or
@@ -124,16 +142,18 @@ Run through this the day before the first service (the Madras Curry House pilot 
    address (a DHCP reservation on the router). Power settings never sleep it.
 2. **Install:** `.env` filled in, `docker compose up -d --build`, and `docker compose ps`
    shows `db`, `api` and `web` healthy.
-3. **Venue:** `create-location`, then `import-menu` with the real menu (dry run first) and a
-   look over the result in the till.
+3. **Venue:** `create-location`, then `import-menu` with the real menu and
+   `import-modifiers` with its modifier groups (dry runs first), and a look over the result
+   in the till: required choices (spice level) block **Add** until picked.
 4. **Printer:** `print-test` prints, including the Tamil line.
 5. **Tills:** `add-device` once per tablet, each with its own order-number range; pair each
    tablet at `http://<venue machine>:3000`.
 6. **Dry run of a service:** on each till, place an order, send it to the kitchen, take a cash
    payment, then another paid by **Card on terminal** (take the card on the venue's own
    terminal as usual and type its receipt or approval number into the till), and check the
-   closeout shows cash and card separately. Void nothing yet (voids from the till aren't
-   built), so use small test items and note them for reconciliation.
+   closeout shows cash and card separately. Split one bill two ways (**Split 2**, one share
+   cash, one card), and void one order after sending it to the kitchen: a VOID ticket
+   prints, and the closeout counts it as voided.
 7. **Backups:** a dump appears in `./backups`; copy it off the machine and set a habit (or a
    synced folder) for copying the nightly ones.
 8. **Fallback:** keep the venue's previous way of taking orders to hand for the first services.
@@ -179,4 +199,6 @@ The API applies any new migrations on start. Take a backup first
 | "Can't reach the Void POS server" on the till | the `api` container is healthy (`docker compose logs api`); retrying the action is safe |
 | "Kitchen printer isn't answering" | the printer is on, its address matches `VOIDPOS_KITCHEN_PRINTER_HOST`, port 9100 is open |
 | Till asks to pair again | it was revoked or re-paired elsewhere; issue a new code |
+| "Too many wrong pairing codes" | wait the minutes it says (ten wrong codes in ten minutes pause pairing), then enter a fresh code carefully |
+| An item is greyed out on the till | it's switched off, or outside its daily window (shown on the button); the till refreshes the menu every few minutes |
 | `api` keeps restarting | `docker compose logs api`; usually `.env` values (admin token under 24 characters, wrong password) |

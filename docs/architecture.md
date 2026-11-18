@@ -35,10 +35,11 @@ a socket straight to the kitchen printer.
 | `src/void_pos/models/` | SQLAlchemy models: the event log plus projected aggregates |
 | `src/void_pos/events/` | `ingest_event` / `apply_events`: validate, append, project; payload schemas per event type |
 | `src/void_pos/commands.py` | The online write path: one till command becomes one event, replay-safe |
-| `src/void_pos/orders/`, `payments/` | Place order, send to kitchen, pay. Hybrid (decided 18 Nov 2026): cash and card-on-terminal (`external` + the terminal's reference) now; Stripe Connect as the commercial default; one terminal integration later if venues need it |
+| `src/void_pos/orders/`, `payments/` | Place order (with the menu rules in `orders/rules.py`), send to kitchen, void, pay in full or in parts. Hybrid (decided 18 Nov 2026): cash and card-on-terminal (`external` + the terminal's reference) now; Stripe Connect as the commercial default; one terminal integration later if venues need it |
+| `src/void_pos/totals.py`, `balance.py` | Order arithmetic shared by validation, payments, reports and the till: a modifier's quantity is per unit of its item; the balance is the total less captured payments |
 | `src/void_pos/sync/` | Device push and cursor pull, scoped to a location |
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
-| `src/void_pos/menu/` | Catalog; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
+| `src/void_pos/menu/` | Catalog: items, modifier groups (min/max choices) and modifiers, daily availability windows (`availability.py`), the till's whole-menu read, spreadsheet imports for items and modifiers; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |
@@ -51,7 +52,7 @@ The event log is the source of truth; `pos_order`, `order_line`, `payment` and
 `ingest_event`:
 
 1. **Online commands** from a paired till: `POST /orders`, `/orders/{id}/send-to-kitchen`,
-   `/orders/{id}/pay`.
+   `/orders/{id}/void`, `/orders/{id}/pay`.
 2. **Sync**: a till pushes a batch of events it recorded (`POST /sync/push`) and pulls the
    rest of its location's events by cursor (`GET /sync/pull`). The cursor is a
    per-location `sync_seq` handed out after commit, under the location's counter lock, so
@@ -86,9 +87,43 @@ line's snapshot already records what was sold. A till's `last_seq` only ever mov
 in canonical `(occurred_at, event_id)` order, and the order state machine settles
 conflicting transitions deterministically.
 
+### Orders, modifiers and the menu
+
+An order is item lines with modifier child lines (data-model rule 2). A modifier's
+quantity is **per unit of its item**: two naan, each with one extra butter, is an item line
+of quantity 2 and a modifier line of quantity 1, and the butter is charged twice. Totals,
+payments, the revenue-by-class report and the till all use the one rule (`totals.py`); a
+modifier without its own category counts in its item's class.
+
+Placing an order **online** also checks it against the menu as it is now
+(`orders/rules.py`): each item must be on sale (switched on and inside its daily window, in
+the location's local time), each catalog modifier's group must apply to its item and be on
+sale, and each group gets between its `min_select` and `max_select` choices, counting
+quantities. A group outside its window has no minimum. Lines with no menu reference (an
+open item, a kitchen note) pass. An order **synced** from a till that was offline is not
+checked: it already happened at the counter, so it is recorded as rung up.
+
+A daily window runs from `available_from` (inclusive) to `available_to` (exclusive); one
+that ends before it starts runs past midnight, and an open end is unbounded. The till reads
+everything in one call, `GET /locations/{id}/menu`: live items with their group ids, every
+group with its modifiers, and what is on sale now.
+
+### Voids and payments
+
+`POST /orders/{id}/void` needs a reason. It is refused once any payment is captured
+(refund first) or if the order is already voided. If the kitchen has the order, a VOID
+ticket prints first, so a printer that's down records nothing and the till retries.
+
+An order can be paid in parts. Each payment takes some or all of the balance (default: all
+of it), never more, and the order turns paid once captured payments cover the total. The
+projection applies the same rule to synced payments, so a split bill settles the same way
+online or offline. Order and payment responses carry `balance_cents`.
+
 ## Who may do what
 
 Every request except `/health*` and `/devices/pair` carries `Authorization: Bearer <token>`.
+Pairing counts wrong codes: 10 from one client or 50 overall in 10 minutes, and it answers
+429 `too_many_attempts` with `Retry-After` until the oldest ages out (`api/ratelimit.py`).
 
 - **Venue admin**: `VOIDPOS_ADMIN_TOKEN` (24+ characters, compared in constant time).
   Creates locations and tills, issues pairing codes, revokes tills, edits the menu, exports.
@@ -100,15 +135,15 @@ Every request except `/health*` and `/devices/pair` carries `Authorization: Bear
 
 | | Till | Admin |
 |---|---|---|
-| Orders, kitchen, pay, sync | yes | no (`till_only`) |
+| Orders, kitchen, void, pay, sync | yes | no (`till_only`) |
 | Read menu, order, closeout | own location | any |
-| Edit menu, export, `/admin/*` | no (`admin_only`) | yes |
+| Edit menu (one item or a bulk edit, all or nothing), export, `/admin/*` | no (`admin_only`) | yes |
 
 ## Errors
 
 Every failure is JSON: `{"detail": "...", "code": "...", ...}`. `detail` is for people,
 `code` is stable for clients to branch on, and extra fields help recovery (`last_seq`,
-`total_cents`, `order_state`). Validation errors are 422 `invalid_request` with a readable
+`balance_cents`, `order_state`). Validation errors are 422 `invalid_request` with a readable
 `detail` and the field `errors`. A uniqueness race the checks missed is 409 `conflict`, and
 anything unexpected is a logged 500 `internal_error`.
 
@@ -118,15 +153,16 @@ anything unexpected is a logged 500 `internal_error`.
 | 402 | `payment_failed` |
 | 403 | `till_only`, `admin_only`, `admin_disabled`, `wrong_location`, `foreign_event` |
 | 404 | `not_found`, `unknown_entity` |
-| 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `payment_exists`, `range_overlap`, `device_revoked` |
-| 422 | `invalid_request`, `amount_mismatch`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `location_mismatch` |
+| 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `order_paid`, `payment_exists`, `range_overlap`, `device_revoked`, `item_unavailable`, `modifier_unavailable`, `changed_since`, `already_reverted`, `in_use`, `group_missing` |
+| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch` |
+| 429 | `too_many_attempts` |
 | 503 | `printer_unavailable`, `database_unavailable` |
 
 The web till keeps a command's body until the server answers: a network error or 5xx keeps
 the ids for a safe retry (and freezes the ticket, so the retry is the same order), a 4xx
 drops them, a `seq_conflict` or `order_number_used` resyncs the counter and resends once,
-and a 401 sends the till back to pairing. Two tabs of one till share counters through
-local storage.
+a 401 sends the till back to pairing, and a refusal because the menu changed reloads the
+menu. Two tabs of one till share counters through local storage.
 
 ## Time and money
 
@@ -152,5 +188,4 @@ not the previous UTC day's.
 - **Hosting.** GCP is deferred until the project is commercial. Moving there means a
   print agent on a venue device (the cloud can't reach a LAN printer) and per-org limits
   on top of the location scoping that already exists.
-- A menu read endpoint with modifier groups (the till uses preset modifiers), split
-  payments, voids from the till, and rate limiting on pairing.
+- Refunds, and amending a placed order (today: void it and ring it up again).
