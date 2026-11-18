@@ -1,6 +1,6 @@
 [project]
 name = "void-pos"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open-core, software-only restaurant POS — local-first order pipeline."
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
@@ -12,7 +12,11 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "python-ulid>=2.7",
     "pydantic-settings>=2.4",
+    "tzdata>=2024.1",  # zoneinfo data for Windows and slim images without /usr/share/zoneinfo
 ]
+
+[project.scripts]
+void-pos = "void_pos.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "httpx>=0.27"]
@@ -34,7 +38,7 @@ extend-exclude = ["migrations"]  # alembic-generated; verified by `alembic check
 python_version = "3.11"
 packages = ["void_pos"]
 mypy_path = "src"
-plugins = ["sqlalchemy.ext.mypy.plugin"]
+
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

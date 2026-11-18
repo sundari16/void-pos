@@ -3,6 +3,12 @@ from __future__ import annotations
 import socket
 from typing import Protocol
 
+from ..errors import ServiceUnavailable
+
+
+class PrinterUnavailable(ServiceUnavailable):
+    code = "printer_unavailable"
+
 
 class Printer(Protocol):
     def send(self, data: bytes) -> None: ...
@@ -17,5 +23,10 @@ class NetworkPrinter:
         self.timeout = timeout
 
     def send(self, data: bytes) -> None:
-        with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
-            sock.sendall(data)
+        try:
+            with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
+                sock.sendall(data)
+        except OSError as exc:  # refused, unreachable, timed out
+            raise PrinterUnavailable(
+                f"the kitchen printer at {self.host}:{self.port} can't be reached"
+            ) from exc

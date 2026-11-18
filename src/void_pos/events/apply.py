@@ -10,6 +10,9 @@ Two guarantees make offline-first sync safe:
   they arrive in. Conflicting order-state transitions are settled by the order state
   machine (``types.can_transition``): the first terminal transition in that canonical
   order wins; a later one is recorded as a conflict rather than overwriting it.
+* **Validated** — an event from an unknown device, for another location, reusing a seq,
+  or with a malformed payload is ``rejected`` and never reaches the log, so one bad
+  event in an offline batch can't take the rest of the batch down with it.
 """
 
 from __future__ import annotations
@@ -19,17 +22,22 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import as_aware
 from ..models import Device, Event, LoyaltyLedger, Order, OrderLine, Payment
+from .payloads import PAYLOAD_SCHEMAS
 from .types import PAID, SENT, VOIDED, EventType, can_transition
 
 
 @dataclass
 class ApplyResult:
     event_id: str
-    status: str  # applied | duplicate | conflict | ignored
+    status: str  # applied | duplicate | conflict | ignored | rejected
     detail: str | None = None
+    code: str | None = None  # set on rejected: unknown_device, seq_conflict, ...
 
 
 def apply_events(session: Session, incoming: list[dict[str, Any]]) -> list[ApplyResult]:
@@ -43,6 +51,10 @@ def ingest_event(session: Session, incoming: dict[str, Any]) -> ApplyResult:
     event_id = incoming["event_id"]
     if session.get(Event, event_id) is not None:
         return ApplyResult(event_id, "duplicate", "event already in the log")
+
+    rejected = _validate(session, incoming)
+    if rejected is not None:
+        return rejected
 
     event = Event(
         event_id=event_id,
@@ -60,6 +72,49 @@ def ingest_event(session: Session, incoming: dict[str, Any]) -> ApplyResult:
     _advance_device_seq(session, event)
     session.flush()
     return result
+
+
+# --- validation --------------------------------------------------------------------
+
+
+def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
+    event_id = incoming["event_id"]
+
+    def reject(code: str, detail: str) -> ApplyResult:
+        return ApplyResult(event_id, "rejected", detail, code)
+
+    device = session.get(Device, incoming["device_id"])
+    if device is None:
+        return reject("unknown_device", "the event's device is not registered")
+    if device.location_id != incoming["location_id"]:
+        return reject("location_mismatch", "the event's location is not the device's location")
+
+    seq = incoming["seq"]
+    taken = session.scalar(
+        select(Event.event_id).where(Event.device_id == device.id, Event.seq == seq).limit(1)
+    )
+    if taken is not None:
+        return reject("seq_conflict", f"seq {seq} is already used by this device")
+
+    schema = PAYLOAD_SCHEMAS.get(incoming["type"])
+    if schema is not None:
+        try:
+            schema.model_validate(incoming.get("payload", {}))
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            where = ".".join(str(p) for p in first["loc"])
+            detail = f"invalid {incoming['type']} payload: {where + ': ' if where else ''}"
+            return reject("invalid_payload", detail + first["msg"])
+
+    if incoming["type"] == EventType.ORDER_PLACED:
+        number = incoming["payload"]["order_number"]
+        if not device.order_number_start <= number <= device.order_number_end:
+            return reject(
+                "order_number_out_of_range",
+                f"order number {number} is outside this device's range "
+                f"{device.order_number_start}-{device.order_number_end}",
+            )
+    return None
 
 
 # --- projection handlers ---------------------------------------------------------
@@ -207,5 +262,5 @@ def _as_date(value: Any) -> date:
 
 def _as_dt(value: Any) -> datetime:
     if isinstance(value, str):
-        return datetime.fromisoformat(value)
-    return value
+        value = datetime.fromisoformat(value)
+    return as_aware(value)

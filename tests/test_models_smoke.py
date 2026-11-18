@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from support import make_engine
 from void_pos.models import (
-    Base,
     Customer,
     Device,
     Event,
@@ -59,8 +59,7 @@ def _seed(session: Session) -> dict[str, object]:
 
 
 def test_order_with_modifier_child_line_and_projections() -> None:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
 
     with Session(engine) as s:
         seed = _seed(s)
@@ -159,8 +158,7 @@ def test_order_with_modifier_child_line_and_projections() -> None:
 
 
 def test_event_seq_is_unique_per_device() -> None:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
 
     with Session(engine) as s:
         seed = _seed(s)

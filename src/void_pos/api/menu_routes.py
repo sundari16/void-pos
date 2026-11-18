@@ -1,8 +1,10 @@
+"""Menu management. Tills read their own location's menu; only the admin edits it."""
+
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from ..menu import (
@@ -15,6 +17,7 @@ from ..menu import (
     list_items,
     update_item,
 )
+from .auth import AdminDep, PrincipalDep
 from .deps import get_session
 from .schemas import (
     MenuItemIn,
@@ -26,7 +29,7 @@ from .schemas import (
     ModifierOut,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["menu"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
@@ -36,7 +39,9 @@ SessionDep = Annotated[Session, Depends(get_session)]
     response_model=MenuItemOut,
     status_code=status.HTTP_201_CREATED,
 )
-def create_menu_item(location_id: str, body: MenuItemIn, session: SessionDep) -> MenuItemOut:
+def create_menu_item(
+    location_id: str, body: MenuItemIn, session: SessionDep, _: AdminDep
+) -> MenuItemOut:
     item = create_item(session, location_id=location_id, **body.model_dump())
     session.commit()
     return MenuItemOut.model_validate(item)
@@ -44,36 +49,32 @@ def create_menu_item(location_id: str, body: MenuItemIn, session: SessionDep) ->
 
 @router.get("/locations/{location_id}/menu/items", response_model=list[MenuItemOut])
 def list_menu_items(
-    location_id: str, session: SessionDep, include_deleted: bool = False
+    location_id: str, session: SessionDep, principal: PrincipalDep, include_deleted: bool = False
 ) -> list[MenuItemOut]:
+    principal.require_location(location_id)
     items = list_items(session, location_id, include_deleted=include_deleted)
     return [MenuItemOut.model_validate(item) for item in items]
 
 
 @router.get("/menu/items/{item_id}", response_model=MenuItemOut)
-def read_menu_item(item_id: str, session: SessionDep) -> MenuItemOut:
-    try:
-        return MenuItemOut.model_validate(get_item(session, item_id))
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="menu item not found") from exc
+def read_menu_item(item_id: str, session: SessionDep, principal: PrincipalDep) -> MenuItemOut:
+    item = get_item(session, item_id)
+    principal.require_location(item.location_id)
+    return MenuItemOut.model_validate(item)
 
 
 @router.patch("/menu/items/{item_id}", response_model=MenuItemOut)
-def patch_menu_item(item_id: str, body: MenuItemUpdate, session: SessionDep) -> MenuItemOut:
-    try:
-        item = update_item(session, item_id, body.model_dump(exclude_unset=True))
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="menu item not found") from exc
+def patch_menu_item(
+    item_id: str, body: MenuItemUpdate, session: SessionDep, _: AdminDep
+) -> MenuItemOut:
+    item = update_item(session, item_id, body.model_dump(exclude_unset=True))
     session.commit()
     return MenuItemOut.model_validate(item)
 
 
 @router.delete("/menu/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_menu_item(item_id: str, session: SessionDep) -> None:
-    try:
-        delete_item(session, item_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="menu item not found") from exc
+def remove_menu_item(item_id: str, session: SessionDep, _: AdminDep) -> None:
+    delete_item(session, item_id)
     session.commit()
 
 
@@ -82,7 +83,9 @@ def remove_menu_item(item_id: str, session: SessionDep) -> None:
     response_model=ModifierGroupOut,
     status_code=status.HTTP_201_CREATED,
 )
-def create_group(location_id: str, body: ModifierGroupIn, session: SessionDep) -> ModifierGroupOut:
+def create_group(
+    location_id: str, body: ModifierGroupIn, session: SessionDep, _: AdminDep
+) -> ModifierGroupOut:
     group = create_modifier_group(session, location_id=location_id, **body.model_dump())
     session.commit()
     return ModifierGroupOut.model_validate(group)
@@ -93,11 +96,10 @@ def create_group(location_id: str, body: ModifierGroupIn, session: SessionDep) -
     response_model=ModifierOut,
     status_code=status.HTTP_201_CREATED,
 )
-def create_group_modifier(group_id: str, body: ModifierIn, session: SessionDep) -> ModifierOut:
-    try:
-        modifier = create_modifier(session, group_id=group_id, **body.model_dump())
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="modifier group not found") from exc
+def create_group_modifier(
+    group_id: str, body: ModifierIn, session: SessionDep, _: AdminDep
+) -> ModifierOut:
+    modifier = create_modifier(session, group_id=group_id, **body.model_dump())
     session.commit()
     return ModifierOut.model_validate(modifier)
 
@@ -106,9 +108,6 @@ def create_group_modifier(group_id: str, body: ModifierIn, session: SessionDep) 
     "/menu/items/{item_id}/modifier-groups/{group_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def attach_group(item_id: str, group_id: str, session: SessionDep) -> None:
-    try:
-        attach_modifier_group(session, menu_item_id=item_id, modifier_group_id=group_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+def attach_group(item_id: str, group_id: str, session: SessionDep, _: AdminDep) -> None:
+    attach_modifier_group(session, menu_item_id=item_id, modifier_group_id=group_id)
     session.commit()

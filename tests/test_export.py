@@ -5,13 +5,15 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from support import make_engine
+from void_pos.commands import Command
+from void_pos.errors import NotFound
 from void_pos.events import ingest_event
 from void_pos.export import export_csv, export_location
 from void_pos.ids import new_ulid
-from void_pos.models import Base, Customer, Device, Location, MenuItem, Org
+from void_pos.models import Customer, Device, Location, MenuItem, Org
 from void_pos.payments import CashProvider, pay_order
 
 TODAY = date(2026, 11, 15)
@@ -19,8 +21,7 @@ T0 = datetime(2026, 11, 15, 10, 0, tzinfo=UTC)
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
     return Session(engine)
 
 
@@ -68,7 +69,10 @@ def _seed_with_activity(s: Session) -> dict[str, Any]:
             },
         },
     )
-    pay_order(s, order_id, CashProvider())  # emits order.paid (device seq advances)
+    pay_order(  # emits order.paid (device seq advances)
+        s, device, order_id, CashProvider(), Command(event_id=new_ulid(), seq=2),
+        payment_id=new_ulid(),
+    )
     ingest_event(
         s,
         {
@@ -124,8 +128,9 @@ def test_export_csv_orders_has_header_and_one_row() -> None:
 def test_export_unknown_entity_raises() -> None:
     with _session() as s:
         d = _seed_with_activity(s)
-        with pytest.raises(KeyError):
+        with pytest.raises(NotFound) as exc:
             export_csv(s, d["loc"], "bogus")
+        assert exc.value.code == "unknown_entity"
 
 
 def test_export_unknown_location_raises() -> None:

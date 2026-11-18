@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..errors import NotFound
 from ..models import Location, Order, OrderLine, Payment
 
 
@@ -67,7 +68,7 @@ def _order_counts(session: Session, location_id: str, business_date: date) -> di
 def shift_closeout(session: Session, location_id: str, business_date: date) -> dict[str, Any]:
     """End-of-shift reconciliation for a location and business date."""
     if session.get(Location, location_id) is None:
-        raise LookupError(f"location {location_id!r} not found")
+        raise NotFound("location not found")
 
     by_provider = payments_by_provider(session, location_id, business_date)
     return {

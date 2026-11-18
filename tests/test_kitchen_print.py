@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import create_engine, select
+import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from support import make_engine
 from void_pos.events import ingest_event
 from void_pos.ids import new_ulid
 from void_pos.models import (
-    Base,
     Device,
     Location,
     MenuItem,
@@ -46,8 +47,7 @@ class FakeRasterizer:
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
     return Session(engine)
 
 
@@ -155,3 +155,15 @@ def test_build_kitchen_ticket_nests_modifiers_under_item() -> None:
         assert ticket.order_number == 1000
         assert [tl.is_modifier for tl in ticket.lines] == [False, True]
         assert ticket.lines[0].quantity == 2
+
+
+def test_pillow_rasterizer_packs_dark_pixels_msb_first() -> None:
+    pytest.importorskip("PIL")
+    from void_pos.printing import PillowRasterizer
+
+    raster = PillowRasterizer(font_size=16).render("ORDER 42")
+    assert raster.width > 8 and raster.height > 4
+    assert len(raster.data) == raster.bytes_per_row * raster.height
+    assert any(raster.data), "rendered text should set some dark dots"
+    # The padding rows above the glyphs are blank paper.
+    assert raster.data[: raster.bytes_per_row] == bytes(raster.bytes_per_row)

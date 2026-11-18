@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .provider import ChargeRequest, ChargeResult, PaymentError, PaymentProvider
 from .providers import CashProvider, ExternalProvider
-from .service import order_total_cents, pay_order
+from .service import PaymentOutcome, order_total_cents, pay_order
 
 __all__ = [
     "CashProvider",
@@ -17,6 +17,7 @@ __all__ = [
     "ChargeResult",
     "ExternalProvider",
     "PaymentError",
+    "PaymentOutcome",
     "PaymentProvider",
     "order_total_cents",
     "pay_order",

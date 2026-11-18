@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..errors import NotFound
 from ..models import (
     Customer,
     Location,
@@ -34,7 +35,7 @@ CSV_ENTITIES = ("menu_items", "orders", "order_lines", "payments", "customers", 
 def export_location(session: Session, location_id: str) -> dict[str, Any]:
     loc = session.get(Location, location_id)
     if loc is None:
-        raise LookupError(f"location {location_id!r} not found")
+        raise NotFound("location not found")
 
     items = session.scalars(select(MenuItem).where(MenuItem.location_id == location_id)).all()
     groups = session.scalars(
@@ -100,7 +101,9 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
 
 def export_csv(session: Session, location_id: str, entity: str) -> str:
     if entity not in CSV_ENTITIES:
-        raise KeyError(entity)
+        raise NotFound(
+            f"unknown export {entity!r}; one of {', '.join(CSV_ENTITIES)}", code="unknown_entity"
+        )
     bundle = export_location(session, location_id)
     rows, header = _csv_rows(bundle, entity)
     buf = StringIO()

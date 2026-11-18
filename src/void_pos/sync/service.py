@@ -1,9 +1,11 @@
-"""Device sync: push device-generated events to the server and pull everyone else's.
+"""Device sync: push device-generated events to the server and pull the venue's others.
 
-The cursor orders by ``received_at`` (server arrival), not device time, so a device that
-comes online and uploads old offline events never slips behind another device's cursor.
-Push is idempotent (the apply layer skips a known ``event_id``), so a retried push after a
-flaky connection is safe.
+Pull is scoped to the device's location and ordered by ``received_at`` (server arrival),
+not device time, so a till that comes online and uploads old offline events never slips
+behind another till's cursor. Each till keeps its own pull cursor; a push doesn't move
+it, because events from other tills can land between its last pull and its push. Push is
+idempotent (the apply layer skips a known ``event_id``), so a retried push after a flaky
+connection is safe, and one bad event is rejected without failing the rest of the batch.
 """
 
 from __future__ import annotations
@@ -15,16 +17,12 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from ..events import apply_events
-from ..models import Event
+from ..errors import Forbidden, InvalidRequest
+from ..events import ApplyResult, apply_events
+from ..models import Device, Event
 
 _CURSOR_SEP = "|"
-
-
-@dataclass
-class PushResult:
-    acks: list[dict[str, str]]
-    cursor: str | None
+MAX_PULL = 500
 
 
 @dataclass
@@ -39,8 +37,13 @@ def _encode_cursor(event: Event) -> str:
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, str]:
-    ts, _, event_id = cursor.partition(_CURSOR_SEP)
-    return datetime.fromisoformat(ts), event_id
+    ts, sep, event_id = cursor.partition(_CURSOR_SEP)
+    try:
+        if not sep or not event_id:
+            raise ValueError(cursor)
+        return datetime.fromisoformat(ts), event_id
+    except ValueError as exc:
+        raise InvalidRequest("that sync cursor isn't valid", code="invalid_cursor") from exc
 
 
 def _serialize(event: Event) -> dict[str, Any]:
@@ -56,30 +59,36 @@ def _serialize(event: Event) -> dict[str, Any]:
     }
 
 
-def push_events(session: Session, incoming: list[dict[str, Any]]) -> PushResult:
-    """Apply a batch of device events idempotently and return per-event acks plus the
-    server's current cursor, from which the device can then pull everyone else's events."""
+def push_events(
+    session: Session, incoming: list[dict[str, Any]], *, device: Device
+) -> list[ApplyResult]:
+    """Apply a batch of this device's events idempotently; one result per event.
+
+    A till may only push its own events: anything claiming another device or location
+    refuses the whole batch, since that is a client bug or a forgery, not bad data."""
+    for event in incoming:
+        if event["device_id"] != device.id or event["location_id"] != device.location_id:
+            raise Forbidden(
+                "a till can only push its own events for its own location",
+                code="foreign_event",
+                event_id=event["event_id"],
+            )
     results = apply_events(session, incoming)
     session.flush()
-    latest = session.scalars(
-        select(Event).order_by(Event.received_at.desc(), Event.event_id.desc()).limit(1)
-    ).first()
-    return PushResult(
-        acks=[{"event_id": r.event_id, "status": r.status} for r in results],
-        cursor=_encode_cursor(latest) if latest is not None else None,
-    )
+    return results
 
 
 def pull_events(
     session: Session,
-    cursor: str | None = None,
     *,
+    location_id: str,
+    cursor: str | None = None,
     limit: int = 100,
     exclude_device_id: str | None = None,
 ) -> PullResult:
-    """Return events the device has not seen, in server-arrival order, the newest last."""
-    limit = max(1, min(limit, 500))
-    stmt = select(Event)
+    """Events at ``location_id`` the caller has not seen, in server-arrival order."""
+    limit = max(1, min(limit, MAX_PULL))
+    stmt = select(Event).where(Event.location_id == location_id)
     if cursor:
         ts, event_id = _decode_cursor(cursor)
         stmt = stmt.where(

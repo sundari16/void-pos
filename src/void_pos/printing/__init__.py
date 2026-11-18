@@ -11,13 +11,14 @@ from .pillow_rasterizer import PillowRasterizer
 from .raster import Raster, Rasterizer
 from .service import print_order
 from .ticket import KitchenTicket, TicketLine, build_kitchen_ticket
-from .transport import NetworkPrinter, Printer
+from .transport import NetworkPrinter, Printer, PrinterUnavailable
 
 __all__ = [
     "KitchenTicket",
     "NetworkPrinter",
     "PillowRasterizer",
     "Printer",
+    "PrinterUnavailable",
     "Raster",
     "Rasterizer",
     "TicketLine",

@@ -4,12 +4,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from support import make_engine
 from void_pos.events import ingest_event
 from void_pos.ids import new_ulid
-from void_pos.models import Base, Device, Location, Org
+from void_pos.models import Device, Location, Org
 from void_pos.reporting import shift_closeout
 
 TODAY = date(2026, 11, 15)
@@ -17,8 +17,7 @@ T0 = datetime(2026, 11, 15, 10, 0, tzinfo=UTC)
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
     return Session(engine)
 
 

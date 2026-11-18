@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from ..errors import PaymentFailed
 
-class PaymentError(Exception):
+
+class PaymentError(PaymentFailed):
     """A charge was attempted but did not succeed."""
 
 

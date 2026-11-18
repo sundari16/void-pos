@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from support import make_engine
 from void_pos.events import ingest_event
 from void_pos.ids import new_ulid
 from void_pos.menu import (
@@ -19,7 +20,6 @@ from void_pos.menu import (
     update_item,
 )
 from void_pos.models import (
-    Base,
     Device,
     Location,
     MenuItem,
@@ -30,8 +30,7 @@ from void_pos.models import (
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
     return Session(engine)
 
 

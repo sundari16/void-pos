@@ -1,269 +1,72 @@
+"""End-to-end HTTP flows a paired till and the venue admin actually run."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm import Session
 
-from void_pos.api.deps import get_printer, get_session
+from support import (
+    ADMIN_TOKEN,
+    CapturePrinter,
+    Venue,
+    add_till,
+    api,
+    auth,
+    cmd,
+    make_engine,
+    order_body,
+    seed_venue,
+)
+from void_pos.clock import local_date, utcnow
 from void_pos.ids import new_ulid
-from void_pos.main import app
-from void_pos.models import Base, Device, Location, MenuItem, Org
-
-# மசாலா தோசை
-TAMIL_DOSA = "மசாலா தୋசை"
-
-
-class CapturePrinter:
-    def __init__(self) -> None:
-        self.sent = bytearray()
-
-    def send(self, data: bytes) -> None:
-        self.sent += data
 
 
 @pytest.fixture
-def client() -> Iterator[tuple[TestClient, dict[str, str], CapturePrinter]]:
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
-    Base.metadata.create_all(engine)
-    sessions = sessionmaker(bind=engine, expire_on_commit=False)
-
-    with sessions() as s:
-        org = Org(name="Madras Curry House")
-        s.add(org)
-        s.flush()
-        loc = Location(org_id=org.id, name="Brisbane CBD")
-        s.add(loc)
-        s.flush()
-        device = Device(
-            location_id=loc.id, name="Till 1", order_number_start=1000, order_number_end=1999
-        )
-        item = MenuItem(
-            location_id=loc.id, name="Masala Dosa", kitchen_name=TAMIL_DOSA, base_price_cents=1850
-        )
-        s.add_all([device, item])
-        s.flush()
-        s.commit()
-        ids = {"loc": loc.id, "device": device.id, "item": item.id}
-
+def ctx() -> Iterator[tuple[TestClient, Venue, CapturePrinter, Session]]:
+    engine = make_engine()
     printer = CapturePrinter()
-
-    def _session() -> Iterator[Session]:
-        with sessions() as s:
-            yield s
-
-    app.dependency_overrides[get_session] = _session
-    app.dependency_overrides[get_printer] = lambda: printer
-    try:
-        yield TestClient(app), ids, printer
-    finally:
-        app.dependency_overrides.clear()
+    with Session(engine) as s:
+        venue = seed_venue(s)
+        with api(engine, printer=printer) as client:
+            yield client, venue, printer, s
 
 
-def test_place_then_send_to_kitchen(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
-    c, ids, printer = client
-    r = c.post(
-        "/orders",
-        json={
-            "device_id": ids["device"],
-            "location_id": ids["loc"],
-            "order_number": 1000,
-            "channel": "web",
-            "fulfillment": "pickup",
-            "lines": [
-                {
-                    "ref": "a",
-                    "menu_item_id": ids["item"],
-                    "quantity": 2,
-                    "name_snapshot": "Masala Dosa",
-                    "kitchen_name_snapshot": TAMIL_DOSA,
-                    "unit_price_cents": 1850,
-                },
-                {
-                    "ref": "b",
-                    "parent_ref": "a",
-                    "quantity": 1,
-                    "name_snapshot": "Extra hot",
-                    "unit_price_cents": 0,
-                },
-            ],
-        },
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["state"] == "open"
-    order_id = body["id"]
+def test_place_send_pay_and_close_out(
+    ctx: tuple[TestClient, Venue, CapturePrinter, Session],
+) -> None:
+    c, venue, printer, _ = ctx
+    till = auth(venue.token)
 
-    r2 = c.post(f"/orders/{order_id}/send-to-kitchen")
-    assert r2.status_code == 200, r2.text
-    assert r2.json()["state"] == "sent"
-    assert r2.json()["ticket_bytes"] > 0
+    placed = c.post("/orders", json=order_body(venue, seq=1, business_date="2026-11-15"), headers=till)
+    assert placed.status_code == 200, placed.text
+    order = placed.json()
+    assert (order["state"], order["total_cents"], order["replayed"]) == ("open", 3700, False)
+
+    sent = c.post(f"/orders/{order['id']}/send-to-kitchen", json=cmd(2), headers=till)
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["state"] == "sent"
+    assert sent.json()["printed"] is True
     assert b"ORDER #1000" in printer.sent
 
-
-def test_place_order_unknown_device_is_404(
-    client: tuple[TestClient, dict[str, str], CapturePrinter],
-) -> None:
-    c, ids, _ = client
-    r = c.post(
-        "/orders",
-        json={
-            "device_id": "00000000000000000000000000",
-            "location_id": ids["loc"],
-            "order_number": 1,
-            "channel": "web",
-            "fulfillment": "pickup",
-            "lines": [
-                {
-                    "ref": "a",
-                    "menu_item_id": ids["item"],
-                    "quantity": 1,
-                    "name_snapshot": "X",
-                    "unit_price_cents": 100,
-                }
-            ],
-        },
+    paid = c.post(
+        f"/orders/{order['id']}/pay",
+        json={**cmd(3), "payment_id": new_ulid(), "method": "cash"},
+        headers=till,
     )
-    assert r.status_code == 404
-
-
-def test_health(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
-    c, _, _ = client
-    assert c.get("/health").json() == {"status": "ok"}
-
-
-def test_pay_order_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
-    c, ids, _ = client
-    placed = c.post(
-        "/orders",
-        json={
-            "device_id": ids["device"],
-            "location_id": ids["loc"],
-            "order_number": 1000,
-            "channel": "web",
-            "fulfillment": "pickup",
-            "lines": [
-                {
-                    "ref": "a",
-                    "menu_item_id": ids["item"],
-                    "quantity": 2,
-                    "name_snapshot": "Masala Dosa",
-                    "unit_price_cents": 1850,
-                }
-            ],
-        },
-    )
-    order_id = placed.json()["id"]
-
-    paid = c.post(f"/orders/{order_id}/pay", json={"method": "cash"})
     assert paid.status_code == 200, paid.text
-    body = paid.json()
-    assert body["provider"] == "cash"
-    assert body["amount_cents"] == 3700
-    assert body["order_state"] == "paid"
+    assert (paid.json()["amount_cents"], paid.json()["order_state"]) == (3700, "paid")
 
+    assert c.get(f"/orders/{order['id']}", headers=till).json()["state"] == "paid"
 
-def test_sync_push_and_pull_via_api(
-    client: tuple[TestClient, dict[str, str], CapturePrinter],
-) -> None:
-    c, ids, _ = client
-    event = {
-        "event_id": new_ulid(),
-        "device_id": ids["device"],
-        "seq": 1,
-        "location_id": ids["loc"],
-        "business_date": "2026-11-15",
-        "occurred_at": "2026-11-15T10:00:00+00:00",
-        "type": "order.placed",
-        "payload": {
-            "order_id": new_ulid(),
-            "order_number": 1000,
-            "channel": "pos",
-            "fulfillment": "pickup",
-            "lines": [
-                {
-                    "id": new_ulid(),
-                    "menu_item_id": ids["item"],
-                    "quantity": 1,
-                    "name_snapshot": "Masala Dosa",
-                    "unit_price_cents": 1850,
-                }
-            ],
-        },
-    }
-    push = c.post("/sync/push", json={"events": [event]})
-    assert push.status_code == 200, push.text
-    assert push.json()["acks"][0]["status"] == "applied"
-
-    pull = c.get("/sync/pull", params={"limit": 50})
-    assert pull.status_code == 200, pull.text
-    assert event["event_id"] in [e["event_id"] for e in pull.json()["events"]]
-
-
-def test_export_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
-    c, ids, _ = client
-    c.post(
-        "/orders",
-        json={
-            "device_id": ids["device"],
-            "location_id": ids["loc"],
-            "order_number": 1000,
-            "channel": "web",
-            "fulfillment": "pickup",
-            "lines": [
-                {
-                    "ref": "a",
-                    "menu_item_id": ids["item"],
-                    "quantity": 1,
-                    "name_snapshot": "Masala Dosa",
-                    "unit_price_cents": 1850,
-                }
-            ],
-        },
+    report = c.get(
+        f"/reports/{venue.location_id}/closeout",
+        params={"business_date": "2026-11-15"},
+        headers=till,
     )
-
-    bundle = c.get(f"/export/{ids['loc']}")
-    assert bundle.status_code == 200, bundle.text
-    assert bundle.json()["location"]["id"] == ids["loc"]
-    assert len(bundle.json()["orders"]) == 1
-
-    csv_resp = c.get(f"/export/{ids['loc']}/csv/orders")
-    assert csv_resp.status_code == 200
-    assert csv_resp.headers["content-type"].startswith("text/csv")
-    assert "order_number" in csv_resp.text
-
-
-def test_closeout_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
-    c, ids, _ = client
-    placed = c.post(
-        "/orders",
-        json={
-            "device_id": ids["device"],
-            "location_id": ids["loc"],
-            "order_number": 1000,
-            "channel": "web",
-            "fulfillment": "pickup",
-            "business_date": "2026-11-15",
-            "lines": [
-                {
-                    "ref": "a",
-                    "menu_item_id": ids["item"],
-                    "quantity": 2,
-                    "name_snapshot": "Masala Dosa",
-                    "unit_price_cents": 1850,
-                }
-            ],
-        },
-    )
-    order_id = placed.json()["id"]
-    c.post(f"/orders/{order_id}/pay", json={"method": "cash"})
-
-    report = c.get(f"/reports/{ids['loc']}/closeout", params={"business_date": "2026-11-15"})
     assert report.status_code == 200, report.text
     body = report.json()
     assert body["gross_sales_cents"] == 3700
@@ -271,21 +74,121 @@ def test_closeout_via_api(client: tuple[TestClient, dict[str, str], CapturePrint
     assert body["orders"]["paid"] == 1
 
 
-def test_menu_crud_via_api(client: tuple[TestClient, dict[str, str], CapturePrinter]) -> None:
-    c, ids, _ = client
+def test_business_date_defaults_to_the_locations_calendar(
+    ctx: tuple[TestClient, Venue, CapturePrinter, Session],
+) -> None:
+    c, venue, _, _ = ctx
+    before = local_date("Australia/Brisbane")
+    placed = c.post("/orders", json=order_body(venue, seq=1), headers=auth(venue.token))
+    after = local_date("Australia/Brisbane", utcnow() + timedelta(seconds=1))
+    assert placed.json()["business_date"] in {before.isoformat(), after.isoformat()}
+
+
+def test_no_printer_configured_still_marks_sent() -> None:
+    engine = make_engine()
+    with Session(engine) as s:
+        venue = seed_venue(s)
+    with api(engine, printer=None) as c:
+        order = c.post("/orders", json=order_body(venue, seq=1), headers=auth(venue.token)).json()
+        sent = c.post(f"/orders/{order['id']}/send-to-kitchen", json=cmd(2), headers=auth(venue.token))
+    assert sent.status_code == 200, sent.text
+    assert (sent.json()["state"], sent.json()["printed"]) == ("sent", False)
+
+
+def test_health_and_readiness(ctx: tuple[TestClient, Venue, CapturePrinter, Session]) -> None:
+    c, _, _, _ = ctx
+    assert c.get("/health").json() == {"status": "ok"}
+    assert c.get("/health/ready").json() == {"status": "ok", "database": "ok"}
+
+
+def test_tills_sync_through_the_server(
+    ctx: tuple[TestClient, Venue, CapturePrinter, Session],
+) -> None:
+    c, venue, _, s = ctx
+    add_till(s, venue.location_id, name="Till 2", token="till-2", order_range=(2000, 2999))
+    s.commit()
+    event = {
+        **cmd(1),
+        "device_id": venue.device_id,
+        "location_id": venue.location_id,
+        "business_date": "2026-11-15",
+        "occurred_at": "2026-11-15T10:00:00+10:00",
+        "type": "order.placed",
+        "payload": {k: v for k, v in order_body(venue, seq=1).items() if k not in ("event_id", "seq")},
+    }
+    push = c.post("/sync/push", json={"events": [event]}, headers=auth(venue.token))
+    assert push.status_code == 200, push.text
+    assert push.json()["acks"][0]["status"] == "applied"
+
+    other = c.get("/sync/pull", headers=auth("till-2"))
+    assert [e["event_id"] for e in other.json()["events"]] == [event["event_id"]]
+
+    own = c.get("/sync/pull", headers=auth(venue.token))
+    assert own.json()["events"] == []
+    own_too = c.get("/sync/pull", params={"include_own": "true"}, headers=auth(venue.token))
+    assert len(own_too.json()["events"]) == 1
+
+
+def test_export_is_admin_only(ctx: tuple[TestClient, Venue, CapturePrinter, Session]) -> None:
+    c, venue, _, _ = ctx
+    c.post("/orders", json=order_body(venue, seq=1), headers=auth(venue.token))
+
+    refused = c.get(f"/export/{venue.location_id}", headers=auth(venue.token))
+    assert (refused.status_code, refused.json()["code"]) == (403, "admin_only")
+
+    bundle = c.get(f"/export/{venue.location_id}", headers=auth(ADMIN_TOKEN))
+    assert bundle.status_code == 200, bundle.text
+    assert len(bundle.json()["orders"]) == 1
+
+    csv_resp = c.get(f"/export/{venue.location_id}/csv/orders", headers=auth(ADMIN_TOKEN))
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-type"].startswith("text/csv")
+    assert "order_number" in csv_resp.text
+    unknown = c.get(f"/export/{venue.location_id}/csv/bogus", headers=auth(ADMIN_TOKEN))
+    assert (unknown.status_code, unknown.json()["code"]) == (404, "unknown_entity")
+
+
+def test_menu_is_read_by_tills_and_edited_by_the_admin(
+    ctx: tuple[TestClient, Venue, CapturePrinter, Session],
+) -> None:
+    c, venue, _, _ = ctx
+    admin, till = auth(ADMIN_TOKEN), auth(venue.token)
+    items_url = f"/locations/{venue.location_id}/menu/items"
+
+    refused = c.post(items_url, json={"name": "Chai", "base_price_cents": 400}, headers=till)
+    assert refused.status_code == 403
+
     created = c.post(
-        f"/locations/{ids['loc']}/menu/items",
-        json={"name": "Chai", "base_price_cents": 400, "category": "Drinks"},
+        items_url, json={"name": "Chai", "base_price_cents": 400, "category": "Drinks"}, headers=admin
     )
     assert created.status_code == 201, created.text
     item_id = created.json()["id"]
+    assert any(i["id"] == item_id for i in c.get(items_url, headers=till).json())
 
-    listed = c.get(f"/locations/{ids['loc']}/menu/items")
-    assert any(i["id"] == item_id for i in listed.json())
-
-    patched = c.patch(f"/menu/items/{item_id}", json={"base_price_cents": 450})
-    assert patched.status_code == 200, patched.text
+    patched = c.patch(f"/menu/items/{item_id}", json={"base_price_cents": 450}, headers=admin)
     assert patched.json()["base_price_cents"] == 450
+    cleared = c.patch(f"/menu/items/{item_id}", json={"name": None}, headers=admin)
+    assert (cleared.status_code, cleared.json()["code"]) == (422, "invalid_request")
 
-    assert c.delete(f"/menu/items/{item_id}").status_code == 204
-    assert c.get(f"/menu/items/{item_id}").status_code == 404
+    assert c.delete(f"/menu/items/{item_id}", headers=admin).status_code == 204
+    gone = c.get(f"/menu/items/{item_id}", headers=till)
+    assert (gone.status_code, gone.json()["code"]) == (404, "not_found")
+
+
+def test_menu_validation(ctx: tuple[TestClient, Venue, CapturePrinter, Session]) -> None:
+    c, venue, _, _ = ctx
+    admin = auth(ADMIN_TOKEN)
+    items_url = f"/locations/{venue.location_id}/menu/items"
+    negative = c.post(items_url, json={"name": "X", "base_price_cents": -1}, headers=admin)
+    assert negative.status_code == 422
+    blank = c.post(items_url, json={"name": "", "base_price_cents": 100}, headers=admin)
+    assert blank.status_code == 422
+    nowhere = c.post(
+        "/locations/00000000000000000000000000/menu/items",
+        json={"name": "X", "base_price_cents": 1},
+        headers=admin,
+    )
+    assert nowhere.status_code == 404
+    groups = f"/locations/{venue.location_id}/menu/modifier-groups"
+    upside_down = c.post(groups, json={"name": "Spice", "min_select": 3, "max_select": 1}, headers=admin)
+    assert (upside_down.status_code, upside_down.json()["code"]) == (422, "invalid_selection_limits")

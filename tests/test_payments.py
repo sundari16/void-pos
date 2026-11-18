@@ -3,38 +3,36 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from support import add_till, make_engine, seed_venue
+from void_pos.commands import Command
+from void_pos.errors import Conflict, InvalidRequest, NotFound, PaymentFailed
 from void_pos.events import ingest_event
 from void_pos.ids import new_ulid
-from void_pos.models import Base, Device, Location, MenuItem, Order, Org, Payment
-from void_pos.payments import CashProvider, ExternalProvider, order_total_cents, pay_order
+from void_pos.models import Device, Event, Order, Payment
+from void_pos.payments import (
+    CashProvider,
+    ChargeRequest,
+    ChargeResult,
+    ExternalProvider,
+    order_total_cents,
+    pay_order,
+)
 
 TODAY = date(2026, 11, 15)
 T0 = datetime(2026, 11, 15, 10, 0, tzinfo=UTC)
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    return Session(engine)
+    return Session(make_engine())
 
 
-def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> str:
-    org = Org(name="Madras Curry House")
-    s.add(org)
-    s.flush()
-    loc = Location(org_id=org.id, name="Brisbane CBD")
-    s.add(loc)
-    s.flush()
-    device = Device(
-        location_id=loc.id, name="Till 1", order_number_start=1000, order_number_end=1999
-    )
-    item = MenuItem(location_id=loc.id, name="Masala Dosa", base_price_cents=price)
-    s.add_all([device, item])
-    s.flush()
-
+def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> tuple[Device, str]:
+    venue = seed_venue(s)
+    device = s.get(Device, venue.device_id)
+    assert device is not None
     order_id = new_ulid()
     ingest_event(
         s,
@@ -42,7 +40,7 @@ def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> str:
             "event_id": new_ulid(),
             "device_id": device.id,
             "seq": 1,
-            "location_id": loc.id,
+            "location_id": venue.location_id,
             "business_date": TODAY,
             "occurred_at": T0,
             "type": "order.placed",
@@ -54,7 +52,7 @@ def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> str:
                 "lines": [
                     {
                         "id": new_ulid(),
-                        "menu_item_id": item.id,
+                        "menu_item_id": venue.item_id,
                         "quantity": quantity,
                         "name_snapshot": "Masala Dosa",
                         "unit_price_cents": price,
@@ -64,44 +62,127 @@ def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> str:
         },
     )
     s.commit()
-    return order_id
+    return device, order_id
+
+
+def _cmd(seq: int) -> Command:
+    return Command(event_id=new_ulid(), seq=seq)
+
+
+class FailingProvider:
+    name = "card"
+
+    def charge(self, request: ChargeRequest) -> ChargeResult:
+        return ChargeResult("card", None, request.amount_cents, request.currency, "failed")
 
 
 def test_order_total_sums_lines() -> None:
     with _session() as s:
-        order_id = _place(s, quantity=2, price=1850)
+        _, order_id = _place(s, quantity=2, price=1850)
         assert order_total_cents(s, order_id) == 3700
 
 
 def test_cash_payment_captures_and_marks_paid() -> None:
     with _session() as s:
-        order_id = _place(s)
-        payment = pay_order(s, order_id, CashProvider())
+        device, order_id = _place(s)
+        pid = new_ulid()
+        outcome = pay_order(s, device, order_id, CashProvider(), _cmd(2), payment_id=pid)
         s.commit()
 
-        assert payment.provider == "cash"
-        assert payment.external_ref is None
-        assert payment.amount_cents == 3700  # defaulted to the order total
+        assert outcome.replayed is False
+        assert outcome.payment.id == pid
+        assert outcome.payment.provider == "cash"
+        assert outcome.payment.external_ref is None
+        assert outcome.payment.amount_cents == 3700  # defaulted to the order total
         assert s.get(Order, order_id).state == "paid"
         assert s.scalar(select(func.count()).select_from(Payment)) == 1
 
 
 def test_external_payment_records_ref_not_as_key() -> None:
     with _session() as s:
-        order_id = _place(s)
-        payment = pay_order(
-            s, order_id, ExternalProvider(external_ref="pi_test_123"), amount_cents=3700
+        device, order_id = _place(s)
+        outcome = pay_order(
+            s,
+            device,
+            order_id,
+            ExternalProvider(external_ref="pi_test_123"),
+            _cmd(2),
+            payment_id=new_ulid(),
+            amount_cents=3700,
         )
         s.commit()
 
-        assert payment.provider == "external"
-        assert payment.external_ref == "pi_test_123"
-        assert payment.id != "pi_test_123"  # keyed on our own ULID, never the provider id
-        assert s.get(Order, order_id).state == "paid"
+        assert outcome.payment.provider == "external"
+        assert outcome.payment.external_ref == "pi_test_123"
+        assert outcome.payment.id != "pi_test_123"  # keyed on our own ULID, never the provider id
+
+
+def test_replayed_payment_returns_the_original_without_charging_again() -> None:
+    with _session() as s:
+        device, order_id = _place(s)
+        command, pid = _cmd(2), new_ulid()
+        first = pay_order(s, device, order_id, CashProvider(), command, payment_id=pid)
+        s.commit()
+        again = pay_order(s, device, order_id, FailingProvider(), command, payment_id=pid)
+
+        assert again.replayed is True
+        assert again.payment.id == first.payment.id
+        assert s.scalar(select(func.count()).select_from(Payment)) == 1
+
+
+def test_paying_a_paid_order_is_refused_before_charging() -> None:
+    with _session() as s:
+        device, order_id = _place(s)
+        pay_order(s, device, order_id, CashProvider(), _cmd(2), payment_id=new_ulid())
+        s.commit()
+        with pytest.raises(Conflict) as exc:
+            pay_order(s, device, order_id, CashProvider(), _cmd(3), payment_id=new_ulid())
+        assert exc.value.code == "order_closed"
+
+
+def test_amount_must_match_the_total() -> None:
+    with _session() as s:
+        device, order_id = _place(s)
+        with pytest.raises(InvalidRequest) as exc:
+            pay_order(
+                s, device, order_id, CashProvider(), _cmd(2), payment_id=new_ulid(), amount_cents=100
+            )
+        assert exc.value.code == "amount_mismatch"
+        assert exc.value.extra["total_cents"] == 3700
+        assert s.get(Order, order_id).state == "open"
+
+
+def test_failed_charge_records_nothing() -> None:
+    with _session() as s:
+        device, order_id = _place(s)
+        with pytest.raises(PaymentFailed):
+            pay_order(s, device, order_id, FailingProvider(), _cmd(2), payment_id=new_ulid())
+        assert s.scalar(select(func.count()).select_from(Event)) == 1  # just the placement
+        assert s.get(Order, order_id).state == "open"
 
 
 def test_pay_unknown_order_raises() -> None:
     with _session() as s:
-        _place(s)
-        with pytest.raises(LookupError):
-            pay_order(s, "00000000000000000000000000", CashProvider())
+        device, _ = _place(s)
+        with pytest.raises(NotFound):
+            pay_order(
+                s, device, "00000000000000000000000000", CashProvider(), _cmd(2), payment_id=new_ulid()
+            )
+
+
+def test_a_till_cannot_pay_another_locations_order() -> None:
+    with _session() as s:
+        _, order_id = _place(s)
+        other = seed_venue(s, location_name="Gold Coast", token="gold-coast-till")
+        stranger = s.get(Device, other.device_id)
+        assert stranger is not None
+        with pytest.raises(NotFound):
+            pay_order(s, stranger, order_id, CashProvider(), _cmd(1), payment_id=new_ulid())
+
+
+def test_a_second_till_at_the_same_location_can_settle() -> None:
+    with _session() as s:
+        device, order_id = _place(s)
+        till2 = add_till(s, device.location_id, name="Till 2", token="t2", order_range=(2000, 2999))
+        outcome = pay_order(s, till2, order_id, CashProvider(), _cmd(1), payment_id=new_ulid())
+        assert outcome.order.state == "paid"

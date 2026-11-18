@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .service import PullResult, PushResult, pull_events, push_events
+from .service import MAX_PULL, PullResult, pull_events, push_events
 
-__all__ = ["PullResult", "PushResult", "pull_events", "push_events"]
+__all__ = ["MAX_PULL", "PullResult", "pull_events", "push_events"]

@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from support import make_engine
 from void_pos.events import apply_events, ingest_event
 from void_pos.ids import new_ulid
 from void_pos.models import (
-    Base,
     Customer,
     Device,
     Event,
@@ -29,8 +29,7 @@ T0 = datetime(2026, 11, 14, 10, 0, tzinfo=UTC)
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = make_engine()
     return Session(engine)
 
 
@@ -230,3 +229,86 @@ def test_unknown_event_type_is_ignored() -> None:
         s.commit()
         assert res.status == "ignored"
         assert s.scalar(select(func.count()).select_from(Event)) == 1  # still logged
+
+
+def test_event_from_unknown_device_is_rejected() -> None:
+    with _session() as s:
+        d = _seed(s)
+        stranger = Device(
+            location_id=d["loc"].id, name="Ghost", order_number_start=1, order_number_end=9
+        )
+        stranger.id = new_ulid()  # never added to the session
+        res = ingest_event(
+            s,
+            _evt(stranger, d["loc"], type="order.placed", seq=1,
+                 payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid())),
+        )
+        assert (res.status, res.code) == ("rejected", "unknown_device")
+        assert s.scalar(select(func.count()).select_from(Event)) == 0
+
+
+def test_event_for_another_location_is_rejected() -> None:
+    with _session() as s:
+        d = _seed(s)
+        other = Location(org_id=d["loc"].org_id, name="Gold Coast")
+        s.add(other)
+        s.flush()
+        res = ingest_event(
+            s,
+            _evt(d["device"], other, type="order.placed", seq=1,
+                 payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid())),
+        )
+        assert (res.status, res.code) == ("rejected", "location_mismatch")
+
+
+def test_reused_seq_is_rejected_and_not_logged() -> None:
+    with _session() as s:
+        d = _seed(s)
+        first = _evt(d["device"], d["loc"], type="order.placed", seq=1,
+                     payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid()))
+        second = _evt(d["device"], d["loc"], type="order.placed", seq=1,
+                      payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid()))
+        assert ingest_event(s, first).status == "applied"
+        res = ingest_event(s, second)
+        assert (res.status, res.code) == ("rejected", "seq_conflict")
+        assert s.scalar(select(func.count()).select_from(Event)) == 1
+
+
+def test_malformed_payload_is_rejected() -> None:
+    with _session() as s:
+        d = _seed(s)
+        payload = _placed_payload(d["item"], d["modifier"], order_id=new_ulid())
+        del payload["order_number"]
+        res = ingest_event(s, _evt(d["device"], d["loc"], type="order.placed", seq=1, payload=payload))
+        assert (res.status, res.code) == ("rejected", "invalid_payload")
+        assert "order_number" in (res.detail or "")
+
+
+def test_modifier_must_hang_off_an_item_in_the_same_order() -> None:
+    with _session() as s:
+        d = _seed(s)
+        payload = _placed_payload(d["item"], d["modifier"], order_id=new_ulid())
+        payload["lines"][1]["parent_line_id"] = new_ulid()
+        res = ingest_event(s, _evt(d["device"], d["loc"], type="order.placed", seq=1, payload=payload))
+        assert (res.status, res.code) == ("rejected", "invalid_payload")
+
+
+def test_order_number_outside_the_devices_range_is_rejected() -> None:
+    with _session() as s:
+        d = _seed(s)
+        payload = _placed_payload(d["item"], d["modifier"], order_id=new_ulid())
+        payload["order_number"] = 5000  # the seeded till owns 1000-1999
+        res = ingest_event(s, _evt(d["device"], d["loc"], type="order.placed", seq=1, payload=payload))
+        assert (res.status, res.code) == ("rejected", "order_number_out_of_range")
+
+
+def test_mixed_naive_and_aware_times_still_sort() -> None:
+    with _session() as s:
+        d = _seed(s)
+        naive = _evt(d["device"], d["loc"], type="order.placed", seq=1,
+                     payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid()),
+                     occurred_at=datetime(2026, 11, 14, 9, 0))
+        aware = _evt(d["device"], d["loc"], type="order.placed", seq=2,
+                     payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid()))
+        results = apply_events(s, [aware, naive])
+        assert [r.status for r in results] == ["applied", "applied"]

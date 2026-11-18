@@ -13,7 +13,8 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from ..models import MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup, OrderLine
+from ..errors import InvalidRequest, NotFound
+from ..models import Location, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup, OrderLine
 
 _ITEM_FIELDS = frozenset(
     {"name", "base_price_cents", "kitchen_name", "category", "tax_rate", "is_available"}
@@ -31,6 +32,7 @@ def create_item(
     tax_rate: float = 0,
     is_available: bool = True,
 ) -> MenuItem:
+    _require_location(session, location_id)
     item = MenuItem(
         location_id=location_id,
         name=name,
@@ -45,10 +47,15 @@ def create_item(
     return item
 
 
+def _require_location(session: Session, location_id: str) -> None:
+    if session.get(Location, location_id) is None:
+        raise NotFound("location not found")
+
+
 def get_item(session: Session, item_id: str) -> MenuItem:
     item = session.get(MenuItem, item_id)
     if item is None:
-        raise LookupError(f"menu item {item_id!r} not found")
+        raise NotFound("menu item not found")
     return item
 
 
@@ -85,6 +92,12 @@ def delete_item(session: Session, item_id: str) -> None:
 def create_modifier_group(
     session: Session, *, location_id: str, name: str, min_select: int = 0, max_select: int | None = None
 ) -> ModifierGroup:
+    _require_location(session, location_id)
+    if min_select < 0 or (max_select is not None and max_select < min_select):
+        raise InvalidRequest(
+            "max_select must be at least min_select, and min_select at least 0",
+            code="invalid_selection_limits",
+        )
     group = ModifierGroup(
         location_id=location_id, name=name, min_select=min_select, max_select=max_select
     )
@@ -102,7 +115,7 @@ def create_modifier(
     kitchen_name: str | None = None,
 ) -> Modifier:
     if session.get(ModifierGroup, group_id) is None:
-        raise LookupError(f"modifier group {group_id!r} not found")
+        raise NotFound("modifier group not found")
     modifier = Modifier(
         group_id=group_id, name=name, price_delta_cents=price_delta_cents, kitchen_name=kitchen_name
     )
@@ -112,10 +125,14 @@ def create_modifier(
 
 
 def attach_modifier_group(session: Session, *, menu_item_id: str, modifier_group_id: str) -> None:
-    if session.get(MenuItem, menu_item_id) is None:
-        raise LookupError(f"menu item {menu_item_id!r} not found")
-    if session.get(ModifierGroup, modifier_group_id) is None:
-        raise LookupError(f"modifier group {modifier_group_id!r} not found")
+    item = get_item(session, menu_item_id)
+    group = session.get(ModifierGroup, modifier_group_id)
+    if group is None:
+        raise NotFound("modifier group not found")
+    if group.location_id != item.location_id:
+        raise InvalidRequest(
+            "the modifier group belongs to another location", code="location_mismatch"
+        )
     if session.get(MenuItemModifierGroup, (menu_item_id, modifier_group_id)) is None:
         session.add(
             MenuItemModifierGroup(menu_item_id=menu_item_id, modifier_group_id=modifier_group_id)

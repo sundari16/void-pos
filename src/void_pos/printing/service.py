@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..errors import NotFound
 from ..models import Order, OrderLine
 from .escpos import encode_ticket
 from .raster import Rasterizer
@@ -22,7 +23,7 @@ def print_order(
     """
     order = session.get(Order, order_id)
     if order is None:
-        raise LookupError(f"order {order_id!r} not found")
+        raise NotFound("order not found")
     lines = session.scalars(
         select(OrderLine).where(OrderLine.order_id == order_id).order_by(OrderLine.id)
     ).all()

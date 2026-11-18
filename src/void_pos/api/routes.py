@@ -1,21 +1,29 @@
+"""Till commands (orders, kitchen, payments), sync, export and reports."""
+
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
-from ..events import ingest_event
-from ..export import CSV_ENTITIES, export_csv, export_location
-from ..ids import new_ulid
-from ..models import Device, Order
-from ..payments import CashProvider, ExternalProvider, pay_order
-from ..printing import Printer, Rasterizer, print_order
+from ..clock import local_date
+from ..commands import Command
+from ..devices import get_location
+from ..export import export_csv, export_location
+from ..models import Order
+from ..orders import get_order, place_order, send_to_kitchen
+from ..payments import CashProvider, ExternalProvider, PaymentProvider, order_total_cents, pay_order
+from ..printing import Printer, Rasterizer
 from ..reporting import shift_closeout
-from ..sync import pull_events, push_events
+from ..sync import MAX_PULL, pull_events, push_events
+from .auth import AdminDep, DeviceDep, PrincipalDep
 from .deps import get_printer, get_rasterizer, get_session
 from .schemas import (
+    Ack,
+    CommandIn,
+    KitchenRequest,
     KitchenResponse,
     OrderResponse,
     PaymentResponse,
@@ -29,159 +37,131 @@ from .schemas import (
 router = APIRouter()
 
 SessionDep = Annotated[Session, Depends(get_session)]
-PrinterDep = Annotated[Printer, Depends(get_printer)]
+PrinterDep = Annotated[Printer | None, Depends(get_printer)]
 RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
 
 
-@router.post("/orders", response_model=OrderResponse)
-def place_order(req: PlaceOrderRequest, session: SessionDep) -> OrderResponse:
-    device = session.get(Device, req.device_id)
-    if device is None:
-        raise HTTPException(status_code=404, detail="device not found")
+def _command(body: CommandIn) -> Command:
+    return Command(event_id=body.event_id, seq=body.seq, occurred_at=body.occurred_at)
 
-    order_id = new_ulid()
-    ref_to_id = {line.ref: new_ulid() for line in req.lines}
-    payload_lines = [
-        {
-            "id": ref_to_id[line.ref],
-            "parent_line_id": ref_to_id.get(line.parent_ref) if line.parent_ref else None,
-            "menu_item_id": line.menu_item_id,
-            "modifier_id": line.modifier_id,
-            "quantity": line.quantity,
-            "name_snapshot": line.name_snapshot,
-            "kitchen_name_snapshot": line.kitchen_name_snapshot,
-            "unit_price_cents": line.unit_price_cents,
-            "tax_rate_snapshot": line.tax_rate_snapshot,
-            "category_snapshot": line.category_snapshot,
-        }
-        for line in req.lines
-    ]
-    ingest_event(
-        session,
-        {
-            "event_id": new_ulid(),
-            "device_id": device.id,
-            "seq": device.last_seq + 1,
-            "location_id": req.location_id,
-            "business_date": req.business_date or datetime.now(UTC).date(),
-            "occurred_at": datetime.now(UTC),
-            "type": "order.placed",
-            "payload": {
-                "order_id": order_id,
-                "order_number": req.order_number,
-                "customer_id": req.customer_id,
-                "channel": req.channel,
-                "fulfillment": req.fulfillment,
-                "lines": payload_lines,
-            },
-        },
+
+def _order_response(session: Session, order: Order, *, replayed: bool) -> OrderResponse:
+    return OrderResponse(
+        id=order.id,
+        order_number=order.order_number,
+        state=order.state,
+        business_date=order.business_date,
+        total_cents=order_total_cents(session, order.id),
+        replayed=replayed,
     )
+
+
+@router.post("/orders", response_model=OrderResponse, tags=["orders"])
+def place_order_route(req: PlaceOrderRequest, session: SessionDep, device: DeviceDep) -> OrderResponse:
+    outcome = place_order(session, device, _command(req), req, business_date=req.business_date)
     session.commit()
-    order = session.get(Order, order_id)
-    return OrderResponse(id=order.id, order_number=order.order_number, state=order.state)
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
 
 
-@router.post("/orders/{order_id}/send-to-kitchen", response_model=KitchenResponse)
-def send_to_kitchen(
+@router.get("/orders/{order_id}", response_model=OrderResponse, tags=["orders"])
+def read_order(order_id: str, session: SessionDep, principal: PrincipalDep) -> OrderResponse:
+    order = get_order(session, order_id, location_id=principal.location_id)
+    return _order_response(session, order, replayed=False)
+
+
+@router.post("/orders/{order_id}/send-to-kitchen", response_model=KitchenResponse, tags=["orders"])
+def send_to_kitchen_route(
     order_id: str,
+    body: KitchenRequest,
     session: SessionDep,
+    device: DeviceDep,
     printer: PrinterDep,
     rasterizer: RasterizerDep,
 ) -> KitchenResponse:
-    order = session.get(Order, order_id)
-    if order is None:
-        raise HTTPException(status_code=404, detail="order not found")
-
-    device = session.get(Device, order.device_id)
-    ingest_event(
-        session,
-        {
-            "event_id": new_ulid(),
-            "device_id": order.device_id,
-            "seq": (device.last_seq + 1) if device is not None else 1,
-            "location_id": order.location_id,
-            "business_date": order.business_date,
-            "occurred_at": datetime.now(UTC),
-            "type": "order.sent",
-            "payload": {"order_id": order_id},
-        },
+    outcome = send_to_kitchen(
+        session, device, order_id, _command(body), printer=printer, rasterizer=rasterizer
     )
-    data = print_order(session, order_id, printer, rasterizer)
     session.commit()
-    session.refresh(order)
-    return KitchenResponse(order_id=order_id, state=order.state, ticket_bytes=len(data))
+    return KitchenResponse(
+        order_id=order_id,
+        state=outcome.order.state,
+        printed=outcome.printed,
+        ticket_bytes=outcome.ticket_bytes,
+        replayed=outcome.replayed,
+    )
 
 
-@router.post("/orders/{order_id}/pay", response_model=PaymentResponse)
-def pay(order_id: str, body: PayRequest, session: SessionDep) -> PaymentResponse:
-    if body.method == "cash":
-        provider = CashProvider()
-    elif body.method == "external":
-        if not body.external_ref:
-            raise HTTPException(
-                status_code=422, detail="external_ref required for method 'external'"
-            )
-        provider = ExternalProvider(external_ref=body.external_ref)
-    else:
-        raise HTTPException(status_code=422, detail=f"unknown payment method {body.method!r}")
-
-    try:
-        payment = pay_order(
-            session, order_id, provider, amount_cents=body.amount_cents, currency=body.currency
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="order not found") from exc
-
+@router.post("/orders/{order_id}/pay", response_model=PaymentResponse, tags=["orders"])
+def pay_route(
+    order_id: str, body: PayRequest, session: SessionDep, device: DeviceDep
+) -> PaymentResponse:
+    provider: PaymentProvider = (
+        ExternalProvider(external_ref=body.external_ref or "")
+        if body.method == "external"
+        else CashProvider()
+    )
+    outcome = pay_order(
+        session,
+        device,
+        order_id,
+        provider,
+        _command(body),
+        payment_id=body.payment_id,
+        amount_cents=body.amount_cents,
+        currency=body.currency,
+    )
     session.commit()
-    order = session.get(Order, order_id)
+    payment = outcome.payment
     return PaymentResponse(
         order_id=order_id,
         payment_id=payment.id,
         provider=payment.provider,
         amount_cents=payment.amount_cents,
+        currency=payment.currency,
         status=payment.status,
-        order_state=order.state,
+        order_state=outcome.order.state,
+        replayed=outcome.replayed,
     )
 
 
-@router.post("/sync/push", response_model=PushResponse)
-def sync_push(req: PushRequest, session: SessionDep) -> PushResponse:
-    result = push_events(session, [event.model_dump() for event in req.events])
+@router.post("/sync/push", response_model=PushResponse, tags=["sync"])
+def sync_push(req: PushRequest, session: SessionDep, device: DeviceDep) -> PushResponse:
+    results = push_events(session, [event.model_dump() for event in req.events], device=device)
     session.commit()
-    return PushResponse(acks=result.acks, cursor=result.cursor)
+    return PushResponse(
+        acks=[Ack(event_id=r.event_id, status=r.status, detail=r.detail, code=r.code) for r in results]
+    )
 
 
-@router.get("/sync/pull", response_model=PullResponse)
+@router.get("/sync/pull", response_model=PullResponse, tags=["sync"])
 def sync_pull(
     session: SessionDep,
+    device: DeviceDep,
     cursor: str | None = None,
-    limit: int = 100,
-    device_id: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PULL)] = 100,
+    include_own: bool = False,
 ) -> PullResponse:
-    result = pull_events(session, cursor, limit=limit, exclude_device_id=device_id)
+    """Events at this till's location after ``cursor``, other tills' only by default."""
+    result = pull_events(
+        session,
+        location_id=device.location_id,
+        cursor=cursor,
+        limit=limit,
+        exclude_device_id=None if include_own else device.id,
+    )
     return PullResponse(
         events=result.events, next_cursor=result.next_cursor, has_more=result.has_more
     )
 
 
-@router.get("/export/{location_id}")
-def export_data(location_id: str, session: SessionDep) -> dict[str, Any]:
-    try:
-        return export_location(session, location_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="location not found") from exc
+@router.get("/export/{location_id}", tags=["export"])
+def export_data(location_id: str, session: SessionDep, _: AdminDep) -> dict[str, Any]:
+    return export_location(session, location_id)
 
 
-@router.get("/export/{location_id}/csv/{entity}")
-def export_entity_csv(location_id: str, entity: str, session: SessionDep) -> Response:
-    try:
-        csv_text = export_csv(session, location_id, entity)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="location not found") from exc
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=404, detail=f"unknown entity {entity!r}; one of {list(CSV_ENTITIES)}"
-        ) from exc
+@router.get("/export/{location_id}/csv/{entity}", tags=["export"])
+def export_entity_csv(location_id: str, entity: str, session: SessionDep, _: AdminDep) -> Response:
+    csv_text = export_csv(session, location_id, entity)
     return Response(
         content=csv_text,
         media_type="text/csv",
@@ -189,12 +169,14 @@ def export_entity_csv(location_id: str, entity: str, session: SessionDep) -> Res
     )
 
 
-@router.get("/reports/{location_id}/closeout")
+@router.get("/reports/{location_id}/closeout", tags=["reports"])
 def closeout(
-    location_id: str, session: SessionDep, business_date: date | None = None
+    location_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+    business_date: date | None = None,
 ) -> dict[str, Any]:
-    day = business_date or datetime.now(UTC).date()
-    try:
-        return shift_closeout(session, location_id, day)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="location not found") from exc
+    """The shift closeout for a business date (default: today in the location's zone)."""
+    principal.require_location(location_id)
+    location = get_location(session, location_id)
+    return shift_closeout(session, location_id, business_date or local_date(location.timezone))
