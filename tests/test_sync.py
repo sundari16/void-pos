@@ -163,3 +163,50 @@ def test_a_malformed_cursor_is_an_invalid_request() -> None:
         with pytest.raises(InvalidRequest) as exc:
             pull_events(s, location_id=ids["loc"], cursor="not-a-cursor")
         assert exc.value.code == "invalid_cursor"
+
+
+def test_an_event_committed_after_a_pull_is_never_skipped() -> None:
+    """The old timestamp cursor skipped an event whose transaction started earlier but
+    committed after another till's event had already been pulled."""
+    from void_pos.models import Event
+
+    with _session() as s:
+        ids = _seed(s)
+        late, early = _placed_event(ids, seq=1), _placed_event(ids, seq=2)
+        push_events(s, [early], device=_device(s, ids))
+        s.commit()
+
+        first = pull_events(s, location_id=ids["loc"])
+        s.commit()
+        assert [e["event_id"] for e in first.events] == [early["event_id"]]
+
+        # The late event arrived (received_at) before the one already pulled.
+        push_events(s, [late], device=_device(s, ids))
+        stored = s.get(Event, late["event_id"])
+        assert stored is not None
+        stored.received_at = s.get(Event, early["event_id"]).received_at - timedelta(seconds=5)
+        s.commit()
+
+        second = pull_events(s, location_id=ids["loc"], cursor=first.next_cursor)
+        assert [e["event_id"] for e in second.events] == [late["event_id"]]
+
+
+def test_sync_positions_are_contiguous_per_location() -> None:
+    from void_pos.models import Event
+
+    with _session() as s:
+        ids = _seed(s)
+        push_events(s, [_placed_event(ids, seq=n) for n in (1, 2, 3)], device=_device(s, ids))
+        s.commit()
+        pull_events(s, location_id=ids["loc"])
+        s.commit()
+        seqs = sorted(e.sync_seq for e in s.query(Event).filter(Event.location_id == ids["loc"]))
+        assert seqs == [1, 2, 3]
+        assert pull_events(s, location_id=ids["loc"], cursor="3").events == []
+
+
+def test_a_timestamp_cursor_from_before_is_refused() -> None:
+    with _session() as s:
+        ids = _seed(s)
+        with pytest.raises(InvalidRequest):
+            pull_events(s, location_id=ids["loc"], cursor="2026-11-18T10:00:00|01ABC")

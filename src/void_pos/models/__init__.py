@@ -5,7 +5,7 @@ from __future__ import annotations
 from .base import Base
 from .catalog import MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
 from .crm import Customer
-from .event import Event
+from .event import Event, SyncCounter
 from .loyalty import LoyaltyLedger
 from .order import Order, OrderLine
 from .org import Device, Location, Org
@@ -26,4 +26,5 @@ __all__ = [
     "OrderLine",
     "Org",
     "Payment",
+    "SyncCounter",
 ]

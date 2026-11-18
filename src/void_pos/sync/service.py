@@ -1,33 +1,30 @@
 """Device sync: push device-generated events to the server and pull the venue's others.
 
-Pull is scoped to the device's location and ordered by ``received_at`` (server arrival),
-not device time, so a till that comes online and uploads old offline events never slips
-behind another till's cursor. Each till keeps its own pull cursor; a push doesn't move
-it, because events from other tills can land between its last pull and its push. Push is
-idempotent (the apply layer skips a known ``event_id``), so a retried push after a flaky
-connection is safe, and one bad event is rejected without failing the rest of the batch.
+Pull is scoped to the device's location and pages by ``sync_seq``, a per-location number
+given to each event after it commits. Each pull first numbers the location's committed,
+unnumbered events (in arrival order) under the location's counter-row lock, then reads
+past the till's cursor. A transaction that commits late can only ever get a *higher*
+number than anything already handed out, so a pull never steps past an event, however
+the writes interleave. Writers never touch the counter, so they never wait on each other
+or on a pull.
 
-Known limit: ``received_at`` is taken when an event is flushed, not when it commits, so
-two transactions committing out of order within the same few milliseconds could let a
-pull step past the earlier one. Commands keep that window minimal (the kitchen ticket
-prints before its event is written); a commit-ordered sequence should replace the
-timestamp cursor before tills rely on pull for offline catch-up.
+Each till keeps its own pull cursor; a push doesn't move it. Push is idempotent (the apply
+layer skips a known ``event_id``), so a retried push after a flaky connection is safe, and
+one bad event is rejected without failing the rest of the batch.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import Forbidden, InvalidRequest
 from ..events import ApplyResult, apply_events
-from ..models import Device, Event
+from ..models import Device, Event, SyncCounter
 
-_CURSOR_SEP = "|"
 MAX_PULL = 500
 
 
@@ -38,18 +35,10 @@ class PullResult:
     has_more: bool
 
 
-def _encode_cursor(event: Event) -> str:
-    return f"{event.received_at.isoformat()}{_CURSOR_SEP}{event.event_id}"
-
-
-def _decode_cursor(cursor: str) -> tuple[datetime, str]:
-    ts, sep, event_id = cursor.partition(_CURSOR_SEP)
-    try:
-        if not sep or not event_id:
-            raise ValueError(cursor)
-        return datetime.fromisoformat(ts), event_id
-    except ValueError as exc:
-        raise InvalidRequest("that sync cursor isn't valid", code="invalid_cursor") from exc
+def _decode_cursor(cursor: str) -> int:
+    if not cursor.isdigit():
+        raise InvalidRequest("that sync cursor isn't valid", code="invalid_cursor")
+    return int(cursor)
 
 
 def _serialize(event: Event) -> dict[str, Any]:
@@ -63,6 +52,26 @@ def _serialize(event: Event) -> dict[str, Any]:
         "type": event.type,
         "payload": event.payload,
     }
+
+
+def sequence_events(session: Session, location_id: str) -> int:
+    """Give the location's committed, unnumbered events their sync positions, in arrival
+    order. Returns how many were numbered. The caller commits."""
+    counter = session.get(SyncCounter, location_id, with_for_update=True)
+    if counter is None:  # a location made outside create_location (tests, old data)
+        counter = SyncCounter(location_id=location_id, last_seq=0)
+        session.add(counter)
+        session.flush()
+    pending = session.scalars(
+        select(Event)
+        .where(Event.location_id == location_id, Event.sync_seq.is_(None))
+        .order_by(Event.received_at, Event.event_id)
+    ).all()
+    for event in pending:
+        counter.last_seq += 1
+        event.sync_seq = counter.last_seq
+    session.flush()
+    return len(pending)
 
 
 def push_events(
@@ -92,23 +101,20 @@ def pull_events(
     limit: int = 100,
     exclude_device_id: str | None = None,
 ) -> PullResult:
-    """Events at ``location_id`` the caller has not seen, in server-arrival order."""
+    """Events at ``location_id`` after ``cursor`` (a ``sync_seq``), in commit order.
+    Numbers newly committed events first, so the caller must commit afterwards."""
+    after = _decode_cursor(cursor) if cursor else 0
     limit = max(1, min(limit, MAX_PULL))
-    stmt = select(Event).where(Event.location_id == location_id)
-    if cursor:
-        ts, event_id = _decode_cursor(cursor)
-        stmt = stmt.where(
-            or_(Event.received_at > ts, and_(Event.received_at == ts, Event.event_id > event_id))
-        )
+    sequence_events(session, location_id)
+
+    stmt = select(Event).where(Event.location_id == location_id, Event.sync_seq > after)
     if exclude_device_id:
         stmt = stmt.where(Event.device_id != exclude_device_id)
-    stmt = stmt.order_by(Event.received_at, Event.event_id).limit(limit + 1)
-
-    rows = list(session.scalars(stmt).all())
+    rows = list(session.scalars(stmt.order_by(Event.sync_seq).limit(limit + 1)).all())
     has_more = len(rows) > limit
     rows = rows[:limit]
     return PullResult(
         events=[_serialize(e) for e in rows],
-        next_cursor=_encode_cursor(rows[-1]) if rows else cursor,
+        next_cursor=str(rows[-1].sync_seq) if rows else cursor,
         has_more=has_more,
     )

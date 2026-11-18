@@ -43,7 +43,9 @@ The event log is the source of truth; `pos_order`, `order_line`, `payment` and
 1. **Online commands** from a paired till: `POST /orders`, `/orders/{id}/send-to-kitchen`,
    `/orders/{id}/pay`.
 2. **Sync**: a till pushes a batch of events it recorded (`POST /sync/push`) and pulls the
-   rest of its location's events by cursor (`GET /sync/pull`).
+   rest of its location's events by cursor (`GET /sync/pull`). The cursor is a
+   per-location `sync_seq` handed out after commit, under the location's counter lock, so
+   a late-committing write always lands after the cursor and is never skipped.
 
 **The till mints every id** (data-model rule 1): the event id and its per-till `seq`, plus
 the order, line and payment ids, all ULIDs. A retried request carries the same ids, so the
@@ -141,9 +143,5 @@ not the previous UTC day's.
 - **Hosting.** GCP is deferred until the project is commercial. Moving there means a
   print agent on a venue device (the cloud can't reach a LAN printer) and per-org limits
   on top of the location scoping that already exists.
-- **A commit-ordered sync cursor.** Pull pages by `received_at`, which is taken at flush,
-  so two transactions committing out of order within milliseconds could let a pull step
-  past one of them. Commands keep the window minimal; a commit-ordered sequence should
-  replace the timestamp before tills rely on pull for offline catch-up.
 - A menu read endpoint with modifier groups (the till uses preset modifiers), split
   payments, voids from the till, and rate limiting on pairing.

@@ -149,6 +149,7 @@ def sync_pull(
         limit=limit,
         exclude_device_id=None if include_own else device.id,
     )
+    session.commit()  # keep the sync positions handed out while pulling
     return PullResponse(
         events=result.events, next_cursor=result.next_cursor, has_more=result.has_more
     )

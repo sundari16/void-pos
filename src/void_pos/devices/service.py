@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import as_aware, is_valid_timezone, utcnow
 from ..errors import Conflict, InvalidRequest, NotFound, Unauthorized
-from ..models import Device, Location, Order, Org
+from ..models import Device, Location, Order, Org, SyncCounter
 
 # No 0/O, 1/I/L: codes are read off one screen and typed into another.
 PAIRING_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -53,6 +53,8 @@ def create_location(
         session.flush()
     location = Location(org_id=org.id, name=name, timezone=timezone)
     session.add(location)
+    session.flush()
+    session.add(SyncCounter(location_id=location.id, last_seq=0))
     session.flush()
     return location
 
