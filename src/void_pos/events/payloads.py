@@ -40,6 +40,8 @@ class OrderLineIn(_Payload):
     unit_price_cents: int = Field(ge=-MAX_LINE_CENTS, le=MAX_LINE_CENTS, strict=True)
     tax_rate_snapshot: float = Field(default=0, ge=0, le=1, strict=True)
     category_snapshot: str | None = Field(default=None, max_length=120)
+    seat_number: int | None = Field(default=None, ge=1, le=999, strict=True)
+    course_number: int | None = Field(default=None, ge=1, le=20, strict=True)
 
 
 def check_line_tree(lines: list[OrderLineIn]) -> None:
@@ -57,6 +59,10 @@ def check_line_tree(lines: list[OrderLineIn]) -> None:
         elif line.parent_line_id not in item_ids:
             raise ValueError(
                 f"modifier line {line.id} must point at an item line in the same order"
+            )
+        elif line.seat_number is not None or line.course_number is not None:
+            raise ValueError(
+                f"modifier line {line.id} can't have its own seat or course; set them on its item"
             )
     if sum(line.unit_price_cents * line.quantity for line in lines) < 0:
         raise ValueError("the order total can't be negative")

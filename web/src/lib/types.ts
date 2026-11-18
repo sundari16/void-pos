@@ -24,6 +24,9 @@ export interface LineIn {
   unit_price_cents: number;
   tax_rate_snapshot?: number;
   category_snapshot?: string | null;
+  /** Dine-in: set on item lines only; a modifier follows its item. */
+  seat_number?: number | null;
+  course_number?: number | null;
 }
 
 /** The ids a till mints for one change; a retry sends the same ones. */

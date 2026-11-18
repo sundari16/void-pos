@@ -128,7 +128,7 @@ def _csv_rows(bundle: dict[str, Any], entity: str) -> tuple[list[dict[str, Any]]
         rows = [{"order_id": o["id"], **line} for o in bundle["orders"] for line in o["lines"]]
         return rows, [
             "order_id", "id", "parent_line_id", "menu_item_id", "modifier_id", "quantity",
-            "name", "unit_price_cents", "tax_rate", "category"
+            "name", "unit_price_cents", "tax_rate", "category", "seat_number", "course_number"
         ]
     if entity == "payments":
         rows = [{"order_id": o["id"], **p} for o in bundle["orders"] for p in o["payments"]]
@@ -196,6 +196,8 @@ def _order_line(line: OrderLine) -> dict[str, Any]:
         "unit_price_cents": line.unit_price_cents,
         "tax_rate": float(line.tax_rate_snapshot),
         "category": line.category_snapshot,
+        "seat_number": line.seat_number,
+        "course_number": line.course_number,
     }
 
 

@@ -234,3 +234,55 @@ def test_unknown_and_foreign_orders_are_not_found(ctx: Ctx) -> None:
     seed_venue(s, location_name="Gold Coast", token="gold-coast-till")
     foreign = c.get(f"/orders/{order['id']}", headers=auth("gold-coast-till"))
     assert foreign.status_code == 404
+
+
+def test_dine_in_lines_carry_seat_and_course(ctx: Ctx) -> None:
+    c, venue, _, s = ctx
+    body = order_body(venue, seq=1)
+    body["fulfillment"] = "dine_in"
+    body["lines"][0].update(seat_number=2, course_number=1)
+    r = c.post("/orders", json=body, headers=auth(venue.token))
+    assert r.status_code == 200, r.text
+
+    from void_pos.models import OrderLine
+
+    item = s.get(OrderLine, body["lines"][0]["id"])
+    modifier = s.get(OrderLine, body["lines"][1]["id"])
+    assert item is not None and modifier is not None
+    assert (item.seat_number, item.course_number) == (2, 1)
+    assert (modifier.seat_number, modifier.course_number) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("line", "change", "fragment"),
+    [
+        (1, {"seat_number": 2}, "can't have its own seat or course"),
+        (0, {"seat_number": 0}, "seat_number"),
+        (0, {"course_number": 21}, "course_number"),
+        (0, {"seat_number": "2"}, "seat_number"),
+    ],
+)
+def test_seat_and_course_are_validated(
+    ctx: Ctx, line: int, change: dict, fragment: str
+) -> None:
+    c, venue, _, _ = ctx
+    body = order_body(venue, seq=1)
+    body["lines"][line].update(change)
+    r = c.post("/orders", json=body, headers=auth(venue.token))
+    assert r.status_code == 422, r.text
+    assert fragment in r.json()["detail"]
+
+
+def test_seat_and_course_are_in_the_export(ctx: Ctx) -> None:
+    from support import ADMIN_TOKEN
+
+    c, venue, _, _ = ctx
+    body = order_body(venue, seq=1)
+    body["lines"][0].update(seat_number=3, course_number=2)
+    c.post("/orders", json=body, headers=auth(venue.token))
+    csv_text = c.get(
+        f"/export/{venue.location_id}/csv/order_lines", headers=auth(ADMIN_TOKEN)
+    ).text
+    header, *rows = csv_text.strip().splitlines()
+    assert header.endswith("category,seat_number,course_number")
+    assert rows[0].endswith("Mains,3,2")

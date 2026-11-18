@@ -200,6 +200,8 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
                 unit_price_cents=line["unit_price_cents"],
                 tax_rate_snapshot=line.get("tax_rate_snapshot", 0),
                 category_snapshot=line.get("category_snapshot"),
+                seat_number=line.get("seat_number"),
+                course_number=line.get("course_number"),
             )
         )
     return ApplyResult(event.event_id, "applied")

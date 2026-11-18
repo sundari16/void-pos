@@ -56,5 +56,9 @@ class OrderLine(Base, TimestampMixin):
     unit_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     tax_rate_snapshot: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False, default=0)
     category_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Dine-in: which seat the item is for and which course it fires with. Set on item
+    # lines only; a modifier follows its item. Unset for counter and takeaway orders.
+    seat_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    course_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="lines")
