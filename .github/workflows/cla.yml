@@ -1,0 +1,31 @@
+name: CLA
+# Pull requests from outside the maintainers must agree to CLA.md by ticking the box in the
+# pull request template. Runs in-repo with no third-party action and no write access.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  agreement:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Contributor agreed to the CLA
+        env:
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Maintainer ($AUTHOR_ASSOCIATION): covered by their own arrangements."
+              exit 0 ;;
+          esac
+          if printf '%s' "$PR_BODY" | grep -qiE -- '- \[x\] I have read the Void POS Contributor License Agreement'; then
+            echo "CLA agreed."
+          else
+            echo "::error::Tick 'I have read the Void POS Contributor License Agreement (CLA.md) and agree to it.' in the pull request description. See CLA.md."
+            exit 1
+          fi

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { friendlyError, runCommand, type Pending } from "@/lib/commands";
 import { formatCents } from "@/lib/money";
+import { providerLabel, terminalRef, type PayMethod } from "@/lib/payments";
 import {
   draftItemFrom,
   orderLineCount,
@@ -51,6 +52,8 @@ export default function PosPage() {
   const [placed, setPlaced] = useState<Placed | null>(null);
   const [busy, setBusy] = useState<null | "place" | "kitchen" | "pay">(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [cardOpen, setCardOpen] = useState(false);
+  const [cardRef, setCardRef] = useState("");
 
   // A command's body (and so its ids) lives here until the server answers, so tapping
   // again after a dropped connection resends the same ids and can't duplicate anything.
@@ -169,17 +172,26 @@ export default function PosPage() {
     }
   }
 
-  async function payCash() {
+  /** Pay the order. An unconfirmed earlier attempt is always resent as it was, whichever
+   *  button is pressed, so a dropped connection can't turn into a second charge. */
+  async function pay(method: PayMethod, externalRef?: string) {
     if (!till || !placed) return;
     setBusy("pay");
     setActionError(null);
     try {
       const payment = await send(
         pendingPay,
-        (): PayRequest => ({ ...command(), payment_id: ulid(), method: "cash" }),
+        (): PayRequest => ({
+          ...command(),
+          payment_id: ulid(),
+          method,
+          external_ref: method === "external" ? externalRef : null,
+        }),
         (body) => api.payOrder(till.token, placed.order.id, body),
       );
       setPlaced({ ...placed, state: payment.order_state, payment });
+      setCardOpen(false);
+      setCardRef("");
     } catch (err) {
       setActionError(friendlyError(err));
     } finally {
@@ -187,10 +199,21 @@ export default function PosPage() {
     }
   }
 
+  function payByCard() {
+    const checked = terminalRef(cardRef);
+    if ("error" in checked) {
+      setActionError(checked.error);
+      return;
+    }
+    void pay("external", checked.ref);
+  }
+
   function newOrder() {
     pendingPlace.current = null;
     pendingKitchen.current = null;
     pendingPay.current = null;
+    setCardOpen(false);
+    setCardRef("");
     setDraft([]);
     setPlaced(null);
     setActionError(null);
@@ -276,8 +299,8 @@ export default function PosPage() {
 
             {placed?.payment && (
               <p className="rounded-lg border border-emerald-300 bg-emerald-50 p-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
-                Paid {formatCents(placed.payment.amount_cents)} · {placed.payment.provider} ·{" "}
-                {placed.payment.status}
+                Paid {formatCents(placed.payment.amount_cents)} ·{" "}
+                {providerLabel(placed.payment.provider)} · {placed.payment.status}
               </p>
             )}
             {placed?.kitchen && (
@@ -300,24 +323,90 @@ export default function PosPage() {
               </button>
             ) : (
               <div className="space-y-2">
-                <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={sendToKitchen}
+                  disabled={placed.state !== "open" || busy !== null}
+                  className="w-full rounded-xl border border-border px-4 py-3 font-semibold disabled:opacity-40 hover:bg-background"
+                >
+                  {busy === "kitchen" ? "Sending…" : placed.kitchen ? "Sent ✓" : "Send to kitchen"}
+                </button>
+
+                {placed.payment ? null : pendingPay.current ? (
                   <button
-                    onClick={sendToKitchen}
-                    disabled={placed.state !== "open" || busy !== null}
-                    className="rounded-xl border border-border px-4 py-3 font-semibold disabled:opacity-40 hover:bg-background"
+                    onClick={() => pay(pendingPay.current?.method ?? "cash")}
+                    disabled={busy !== null}
+                    className="w-full rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
                   >
-                    {busy === "kitchen" ? "Sending…" : placed.kitchen ? "Sent ✓" : "Send to kitchen"}
+                    {busy === "pay"
+                      ? "Paying…"
+                      : `Retry ${pendingPay.current.method === "external" ? "card" : "cash"} payment`}
                   </button>
-                  <button
-                    onClick={payCash}
-                    disabled={
-                      (placed.state !== "open" && placed.state !== "sent") || busy !== null
-                    }
-                    className="rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
+                ) : cardOpen ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      payByCard();
+                    }}
+                    className="space-y-2 rounded-xl border border-border p-3"
                   >
-                    {busy === "pay" ? "Paying…" : placed.payment ? "Paid ✓" : "Pay cash"}
-                  </button>
-                </div>
+                    <label htmlFor="card-ref" className="block text-sm font-medium">
+                      Terminal receipt or approval number
+                    </label>
+                    <input
+                      id="card-ref"
+                      value={cardRef}
+                      onChange={(e) => setCardRef(e.target.value)}
+                      autoFocus
+                      autoComplete="off"
+                      inputMode="text"
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="submit"
+                        disabled={busy !== null || !cardRef.trim()}
+                        className="rounded-xl bg-accent px-4 py-2.5 font-semibold text-white disabled:opacity-40"
+                      >
+                        {busy === "pay" ? "Recording…" : "Record card payment"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCardOpen(false);
+                          setCardRef("");
+                        }}
+                        disabled={busy !== null}
+                        className="rounded-xl border border-border px-4 py-2.5 font-medium hover:bg-background"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => pay("cash")}
+                      disabled={
+                        (placed.state !== "open" && placed.state !== "sent") || busy !== null
+                      }
+                      className="rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
+                    >
+                      {busy === "pay" ? "Paying…" : "Pay cash"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActionError(null);
+                        setCardOpen(true);
+                      }}
+                      disabled={
+                        (placed.state !== "open" && placed.state !== "sent") || busy !== null
+                      }
+                      className="rounded-xl border border-accent px-4 py-3 font-semibold text-accent disabled:opacity-40"
+                    >
+                      Card on terminal
+                    </button>
+                  </div>
+                )}
                 <button
                   onClick={newOrder}
                   className="w-full rounded-xl px-4 py-2 text-sm font-medium text-muted hover:bg-background"
