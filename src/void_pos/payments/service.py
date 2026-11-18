@@ -11,6 +11,7 @@ from ..events import EventType
 from ..events.types import TERMINAL
 from ..models import Device, Order, OrderLine, Payment
 from ..orders import get_order
+from ..totals import total_cents
 from .provider import ChargeRequest, PaymentError, PaymentProvider
 
 
@@ -22,9 +23,8 @@ class PaymentOutcome:
 
 
 def order_total_cents(session: Session, order_id: str) -> int:
-    """Sum of every line (items and modifier child lines) times its quantity."""
-    lines = session.scalars(select(OrderLine).where(OrderLine.order_id == order_id)).all()
-    return sum(line.unit_price_cents * line.quantity for line in lines)
+    """Every line's price times its extended quantity (a modifier counts once per item)."""
+    return total_cents(session.scalars(select(OrderLine).where(OrderLine.order_id == order_id)))
 
 
 def pay_order(

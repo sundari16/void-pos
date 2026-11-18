@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..errors import NotFound
 from ..models import Location, Order, OrderLine, Payment
@@ -32,19 +32,21 @@ def payments_by_provider(session: Session, location_id: str, business_date: date
 
 def revenue_class_sales(session: Session, location_id: str, business_date: date) -> dict[str, int]:
     """Net sales grouped by revenue class (the line's category) over paid orders — the
-    basis for tip-outs. Lines with no category fall under ``uncategorized``."""
+    basis for tip-outs. A modifier with no category of its own counts in its item's class,
+    once per unit of the item. Lines with no category fall under ``uncategorized``."""
+    item = aliased(OrderLine)
+    category = func.coalesce(OrderLine.category_snapshot, item.category_snapshot)
+    quantity = OrderLine.quantity * func.coalesce(item.quantity, 1)
     rows = session.execute(
-        select(
-            OrderLine.category_snapshot,
-            func.sum(OrderLine.unit_price_cents * OrderLine.quantity),
-        )
+        select(category, func.sum(OrderLine.unit_price_cents * quantity))
         .join(Order, Order.id == OrderLine.order_id)
+        .outerjoin(item, item.id == OrderLine.parent_line_id)
         .where(
             Order.location_id == location_id,
             Order.business_date == business_date,
             Order.state == "paid",
         )
-        .group_by(OrderLine.category_snapshot)
+        .group_by(category)
     ).all()
     return {(category or "uncategorized"): int(total or 0) for category, total in rows}
 

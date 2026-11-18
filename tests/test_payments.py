@@ -29,11 +29,29 @@ def _session() -> Session:
     return Session(make_engine())
 
 
-def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> tuple[Device, str]:
+def _place(
+    s: Session,
+    *,
+    quantity: int = 2,
+    price: int = 1850,
+    modifiers: tuple[tuple[int, int], ...] = (),
+) -> tuple[Device, str]:
+    """Place one item line, plus a modifier child line per (quantity, price) pair."""
     venue = seed_venue(s)
     device = s.get(Device, venue.device_id)
     assert device is not None
     order_id = new_ulid()
+    item_line_id = new_ulid()
+    mod_lines = [
+        {
+            "id": new_ulid(),
+            "parent_line_id": item_line_id,
+            "quantity": mod_qty,
+            "name_snapshot": "Extra",
+            "unit_price_cents": mod_price,
+        }
+        for mod_qty, mod_price in modifiers
+    ]
     ingest_event(
         s,
         {
@@ -51,12 +69,13 @@ def _place(s: Session, *, quantity: int = 2, price: int = 1850) -> tuple[Device,
                 "fulfillment": "pickup",
                 "lines": [
                     {
-                        "id": new_ulid(),
+                        "id": item_line_id,
                         "menu_item_id": venue.item_id,
                         "quantity": quantity,
                         "name_snapshot": "Masala Dosa",
                         "unit_price_cents": price,
-                    }
+                    },
+                    *mod_lines,
                 ],
             },
         },
@@ -80,6 +99,14 @@ def test_order_total_sums_lines() -> None:
     with _session() as s:
         _, order_id = _place(s, quantity=2, price=1850)
         assert order_total_cents(s, order_id) == 3700
+
+
+def test_modifiers_are_charged_per_unit_of_their_item() -> None:
+    with _session() as s:
+        # 2 dosa, each with extra cheese (150) and 2 extra chutneys (50 each), less a
+        # 100 discount modifier: 2 x (1850 + 150 + 100 - 100).
+        _, order_id = _place(s, quantity=2, price=1850, modifiers=((1, 150), (2, 50), (1, -100)))
+        assert order_total_cents(s, order_id) == 2 * 2000
 
 
 def test_cash_payment_captures_and_marks_paid() -> None:

@@ -11,6 +11,7 @@ export interface DraftModifier {
   name: string;
   kitchenName?: string;
   unitPriceCents: number; // the price delta
+  quantity: number; // per unit of the item
 }
 
 export interface DraftItem {
@@ -44,16 +45,17 @@ export function draftItemFrom(
       name: m.name,
       kitchenName: m.kitchenName,
       unitPriceCents: m.priceDeltaCents,
+      quantity: 1,
     })),
   };
 }
 
-/** Subtotal for one item line: (item + its modifiers, each as a child line) x qty rules.
- *  Mirrors the backend's order_total_cents: sum(unit_price_cents * quantity) over every
- *  line. Item lines carry the item quantity; modifier child lines carry quantity 1. */
+/** Subtotal for one item and its modifiers. A modifier's quantity is per unit of the
+ *  item, so 2 naan with 1 extra butter charges the butter twice. Mirrors the backend's
+ *  totals.total_cents. */
 export function itemSubtotalCents(item: DraftItem): number {
-  const modsEach = item.modifiers.reduce((sum, m) => sum + m.unitPriceCents, 0);
-  return item.unitPriceCents * item.quantity + modsEach;
+  const modsEach = item.modifiers.reduce((sum, m) => sum + m.unitPriceCents * m.quantity, 0);
+  return (item.unitPriceCents + modsEach) * item.quantity;
 }
 
 export function orderTotalCents(items: DraftItem[]): number {
@@ -82,11 +84,13 @@ export function toLineIns(items: DraftItem[]): LineIn[] {
       lines.push({
         id: mod.ref,
         parent_line_id: item.ref,
-        quantity: 1,
+        quantity: mod.quantity,
         name_snapshot: mod.name,
         kitchen_name_snapshot: mod.kitchenName ?? null,
         unit_price_cents: mod.unitPriceCents,
-        // A modifier's revenue belongs to its item's class (the basis for tip-outs).
+        // A modifier is taxed like its item, and its revenue belongs to the item's class
+        // (the basis for tip-outs).
+        tax_rate_snapshot: item.taxRate,
         category_snapshot: item.category ?? null,
       });
     }

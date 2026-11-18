@@ -50,16 +50,19 @@ def _seed_day(s: Session) -> dict[str, Any]:
             },
         )
 
-    def line(*, qty: int, price: int, category: str) -> dict[str, Any]:
+    def line(
+        *, qty: int, price: int, category: str | None, parent: str | None = None
+    ) -> dict[str, Any]:
         return {
             "id": new_ulid(),
+            "parent_line_id": parent,
             "quantity": qty,
-            "name_snapshot": category,
+            "name_snapshot": category or "modifier",
             "unit_price_cents": price,
             "category_snapshot": category,
         }
 
-    order_a, order_b, order_c = new_ulid(), new_ulid(), new_ulid()
+    order_a, order_b, order_c, order_d = new_ulid(), new_ulid(), new_ulid(), new_ulid()
     # A: 2x Mains (3700), paid cash
     ev(seq=1, type="order.placed", payload={
         "order_id": order_a, "order_number": 1000, "channel": "pos", "fulfillment": "pickup",
@@ -80,6 +83,16 @@ def _seed_day(s: Session) -> dict[str, Any]:
         "order_id": order_c, "order_number": 1002, "channel": "pos", "fulfillment": "pickup",
         "lines": [line(qty=1, price=1850, category="Mains")]})
     ev(seq=6, type="order.voided", payload={"order_id": order_c})
+    # D: 2x Breads (400) each with butter (100, no category: counts as Breads) and a dip
+    # (50, its own Extras class) = 2 x 550 = 1100, paid cash
+    naan = line(qty=2, price=400, category="Breads")
+    ev(seq=7, type="order.placed", payload={
+        "order_id": order_d, "order_number": 1003, "channel": "pos", "fulfillment": "pickup",
+        "lines": [naan, line(qty=1, price=100, category=None, parent=naan["id"]),
+                  line(qty=1, price=50, category="Extras", parent=naan["id"])]})
+    ev(seq=8, type="order.paid", payload={
+        "order_id": order_d,
+        "payment": {"id": new_ulid(), "provider": "cash", "amount_cents": 1100}})
     s.commit()
     return ids
 
@@ -89,9 +102,9 @@ def test_shift_closeout_totals() -> None:
         ids = _seed_day(s)
         report = shift_closeout(s, ids["loc"], TODAY)
 
-        assert report["gross_sales_cents"] == 4300
-        assert report["payments_by_provider"] == {"cash": 3700, "external": 600}
-        assert report["orders"] == {"total": 3, "open": 0, "sent": 0, "paid": 2, "voided": 1}
+        assert report["gross_sales_cents"] == 5400
+        assert report["payments_by_provider"] == {"cash": 4800, "external": 600}
+        assert report["orders"] == {"total": 4, "open": 0, "sent": 0, "paid": 3, "voided": 1}
 
 
 def test_revenue_class_excludes_unpaid_orders() -> None:
@@ -100,7 +113,15 @@ def test_revenue_class_excludes_unpaid_orders() -> None:
         report = shift_closeout(s, ids["loc"], TODAY)
 
         # Only the paid Mains order (3700) counts — the voided one (1850) does not.
-        assert report["revenue_by_class_cents"] == {"Mains": 3700, "Drinks": 600}
+        # Modifiers count once per unit of their item, in their item's class unless they
+        # carry their own.
+        assert report["revenue_by_class_cents"] == {
+            "Mains": 3700,
+            "Drinks": 600,
+            "Breads": 1000,
+            "Extras": 100,
+        }
+        assert sum(report["revenue_by_class_cents"].values()) == report["gross_sales_cents"]
 
 
 def test_closeout_unknown_location_raises() -> None:

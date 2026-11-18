@@ -34,13 +34,19 @@ describe("draft orders", () => {
       parent_line_id: itemLine.id,
       quantity: 1,
       unit_price_cents: 150,
+      tax_rate_snapshot: 0.1,
       category_snapshot: "Mains",
     });
     expect(modLine.id).not.toBe(itemLine.id);
   });
 
-  it("total like the server: each line's price times its quantity", () => {
-    expect(orderTotalCents([draftItemFrom(dosa, 2, [extraCheese])])).toBe(1850 * 2 + 150);
+  it("total like the server: modifiers are charged per unit of their item", () => {
+    expect(orderTotalCents([draftItemFrom(dosa, 2, [extraCheese])])).toBe(2 * (1850 + 150));
+
+    const item = draftItemFrom(dosa, 3, [extraCheese]);
+    item.modifiers[0].quantity = 2;
+    expect(orderTotalCents([item])).toBe(3 * (1850 + 2 * 150));
+    expect(toLineIns([item])[1].quantity).toBe(2);
   });
 });
 
