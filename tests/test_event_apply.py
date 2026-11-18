@@ -308,7 +308,8 @@ def test_mixed_naive_and_aware_times_still_sort() -> None:
         naive = _evt(d["device"], d["loc"], type="order.placed", seq=1,
                      payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid()),
                      occurred_at=datetime(2026, 11, 14, 9, 0))
-        aware = _evt(d["device"], d["loc"], type="order.placed", seq=2,
-                     payload=_placed_payload(d["item"], d["modifier"], order_id=new_ulid()))
+        second = _placed_payload(d["item"], d["modifier"], order_id=new_ulid())
+        second["order_number"] = 1001
+        aware = _evt(d["device"], d["loc"], type="order.placed", seq=2, payload=second)
         results = apply_events(s, [aware, naive])
         assert [r.status for r in results] == ["applied", "applied"]

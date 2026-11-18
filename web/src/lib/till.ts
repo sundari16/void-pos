@@ -91,6 +91,21 @@ export function resyncSeq(till: Till, lastSeq: number): Till {
   return { ...till, nextSeq: Math.max(till.nextSeq, lastSeq + 1) };
 }
 
+/** After order_number_used: carry on from the server's next free number. */
+export function resyncOrderNumber(till: Till, next: number): Till {
+  return { ...till, nextOrderNumber: Math.max(till.nextOrderNumber, next) };
+}
+
+/** Two tabs of the same till share storage: take the further of each counter. */
+export function mergeCounters(till: Till, stored: Till | null): Till {
+  if (!stored || stored.token !== till.token) return till;
+  return {
+    ...till,
+    nextSeq: Math.max(till.nextSeq, stored.nextSeq),
+    nextOrderNumber: Math.max(till.nextOrderNumber, stored.nextOrderNumber),
+  };
+}
+
 function isTill(value: unknown): value is Till {
   if (typeof value !== "object" || value === null) return false;
   const t = value as Record<string, unknown>;

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -45,6 +45,8 @@ def make_engine() -> Engine:
         engine = create_engine(
             "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
         )
+        # Enforce foreign keys like PostgreSQL does, so a dangling reference fails here too.
+        event.listen(engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))
     Base.metadata.create_all(engine)
     return engine
 

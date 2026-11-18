@@ -38,7 +38,7 @@ interface Placed {
 }
 
 export default function PosPage() {
-  const { till, ready, command, orderNumber, seqAfter, unpair } = useTill();
+  const { till, ready, command, orderNumber, orderNumberAfter, seqAfter, unpair } = useTill();
 
   const [items, setItems] = useState<MenuItem[]>([]);
   const [menuError, setMenuError] = useState<string | null>(null);
@@ -57,11 +57,6 @@ export default function PosPage() {
   const pendingPlace = useRef<PlaceOrderRequest | null>(null);
   const pendingKitchen = useRef<CommandIn | null>(null);
   const pendingPay = useRef<PayRequest | null>(null);
-
-  // A changed draft is a different order: never replay an earlier attempt for it.
-  useEffect(() => {
-    pendingPlace.current = null;
-  }, [draft, fulfillment]);
 
   const token = till?.token;
   const locationId = till?.locationId;
@@ -88,6 +83,7 @@ export default function PosPage() {
     pending: Pending<B>,
     build: () => B,
     call: (body: B) => Promise<R>,
+    repair?: (err: ApiError, body: B) => B | null,
   ): Promise<R> {
     return runCommand({
       pending,
@@ -95,19 +91,25 @@ export default function PosPage() {
       send: call,
       seqAfter,
       onUnauthorized: () => unpair(REVOKED_NOTICE),
+      repair,
     });
   }
 
-  const editable = placed === null;
+  // While a placement is unconfirmed (the server may or may not have it), the ticket is
+  // frozen: tapping Place order again must resend exactly this order, never a changed one.
+  const unconfirmed = placed === null && pendingPlace.current !== null;
+  const editable = placed === null && !unconfirmed;
   const total = orderTotalCents(draft);
   const count = orderLineCount(draft);
 
   function addItem(item: MenuItem, quantity: number, modifiers: QuickModifier[]) {
+    if (!editable) return;
     setDraft((prev) => [...prev, draftItemFrom(item, quantity, modifiers)]);
     setDialogItem(null);
   }
 
   function changeQty(ref: string, delta: number) {
+    if (!editable) return;
     setDraft((prev) =>
       prev.map((it) =>
         it.ref === ref ? { ...it, quantity: Math.max(1, it.quantity + delta) } : it,
@@ -116,6 +118,7 @@ export default function PosPage() {
   }
 
   function removeItem(ref: string) {
+    if (!editable) return;
     setDraft((prev) => prev.filter((it) => it.ref !== ref));
   }
 
@@ -135,6 +138,12 @@ export default function PosPage() {
           lines: toLineIns(draft),
         }),
         (body) => api.placeOrder(till.token, body),
+        (err, body) => {
+          const next = err.body.next_order_number;
+          return err.code === "order_number_used" && typeof next === "number"
+            ? { ...body, order_number: orderNumberAfter(next) }
+            : null;
+        },
       );
       setPlaced({ order, state: order.state });
     } catch (err) {
@@ -201,7 +210,7 @@ export default function PosPage() {
             Couldn&apos;t load the menu: {menuError}
           </p>
         )}
-        {!loading && !menuError && <MenuGrid items={items} onPick={setDialogItem} />}
+        {!loading && !menuError && <MenuGrid items={items} onPick={(item) => editable && setDialogItem(item)} />}
       </section>
 
       {/* Order ticket */}
@@ -223,6 +232,7 @@ export default function PosPage() {
               <select
                 value={fulfillment}
                 onChange={(e) => setFulfillment(e.target.value)}
+                disabled={!editable}
                 className="rounded-md border border-border bg-background px-2 py-1 text-sm"
                 aria-label="Fulfillment"
               >
@@ -251,6 +261,12 @@ export default function PosPage() {
                 {formatCents(total)}
               </span>
             </div>
+
+            {unconfirmed && (
+              <p className="text-xs text-muted">
+                The order is held as it is until the server confirms it.
+              </p>
+            )}
 
             {actionError && (
               <p className="rounded-lg border border-red-300 bg-red-50 p-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">

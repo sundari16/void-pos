@@ -15,7 +15,9 @@ import {
   browserStore,
   clearTill,
   loadTill,
+  mergeCounters,
   refreshTill,
+  resyncOrderNumber,
   resyncSeq,
   saveTill,
   takeOrderNumber,
@@ -41,6 +43,8 @@ interface TillContextValue {
   orderNumber: () => number;
   /** Resync after a seq_conflict and return a fresh seq. */
   seqAfter: (lastSeq: number) => number;
+  /** Resync after order_number_used and return a fresh order number. */
+  orderNumberAfter: (next: number) => number;
 }
 
 const TillContext = createContext<TillContextValue | null>(null);
@@ -92,7 +96,8 @@ export function TillProvider({ children }: { children: ReactNode }) {
   const value = useMemo<TillContextValue>(() => {
     function paired(): Till {
       if (!current.current) throw new Error("This till isn't paired.");
-      return current.current;
+      // Another tab of this till may have moved the counters on since we last looked.
+      return mergeCounters(current.current, loadTill(browserStore()));
     }
     return {
       till,
@@ -117,6 +122,11 @@ export function TillProvider({ children }: { children: ReactNode }) {
         const [seq, next] = takeSeq(resyncSeq(paired(), lastSeq));
         commit(next);
         return seq;
+      },
+      orderNumberAfter(nextNumber) {
+        const [number, next] = takeOrderNumber(resyncOrderNumber(paired(), nextNumber));
+        commit(next);
+        return number;
       },
     };
   }, [till, ready, notice, commit, unpair]);

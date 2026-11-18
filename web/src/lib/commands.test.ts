@@ -68,6 +68,19 @@ describe("runCommand", () => {
     expect(sent[1]).toEqual({ event_id: sent[0].event_id, seq: 42 });
   });
 
+  it("lets a command repair its own body once (a reused order number)", async () => {
+    const { opts, sent } = setup([
+      fail(new ApiError(409, "order_number_used", "taken", { next_order_number: 1005 })),
+      () => "ok",
+    ]);
+    const repair = vi.fn((err: ApiError, body: CommandIn) =>
+      err.code === "order_number_used" ? { ...body, seq: 99 } : null,
+    );
+    await expect(runCommand({ ...opts, repair })).resolves.toBe("ok");
+    expect(repair).toHaveBeenCalledOnce();
+    expect(sent[1]).toEqual({ event_id: sent[0].event_id, seq: 99 });
+  });
+
   it("gives up after a second seq conflict", async () => {
     const conflict = new ApiError(409, "seq_conflict", "used", { last_seq: 41 });
     const { opts } = setup([fail(conflict), fail(conflict)]);

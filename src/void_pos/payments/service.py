@@ -45,7 +45,8 @@ def pay_order(
     payment, and a paid or voided order, or an amount other than the total, is refused.
     ``payment_id`` doubles as the provider's idempotency key.
     """
-    order = get_order(session, order_id, location_id=device.location_id)
+    # Locked until commit: a second till paying the same order waits, then sees it paid.
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
     replay = find_replay(
         session, command, device=device, event_type=EventType.ORDER_PAID, order_id=order_id
     )

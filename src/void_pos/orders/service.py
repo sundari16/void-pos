@@ -8,7 +8,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from ..clock import local_date
-from ..commands import Command, find_replay, record
+from ..commands import Command, ensure_seq_free, find_replay, record
 from ..devices import get_location
 from ..errors import Conflict, NotFound
 from ..events import EventType, OrderPlaced
@@ -31,9 +31,13 @@ class KitchenOutcome:
     replayed: bool
 
 
-def get_order(session: Session, order_id: str, *, location_id: str | None = None) -> Order:
-    """The order, scoped to a location when given (another venue's order is not found)."""
-    order = session.get(Order, order_id)
+def get_order(
+    session: Session, order_id: str, *, location_id: str | None = None, for_update: bool = False
+) -> Order:
+    """The order, scoped to a location when given (another venue's order is not found).
+    ``for_update`` locks the row until commit (PostgreSQL), so two tills can't act on the
+    same order at once."""
+    order = session.get(Order, order_id, with_for_update=for_update)
     if order is None or (location_id is not None and order.location_id != location_id):
         raise NotFound("order not found")
     return order
@@ -83,10 +87,11 @@ def send_to_kitchen(
 
     Sending again reprints, and a paid order still prints (counter service takes payment
     first); only a voided order is refused. A replayed command does not reprint. The
-    print happens before the caller commits, so if the printer can't be reached the
-    event is rolled back and the till can simply retry.
+    ticket prints before the event is written: if the printer can't be reached nothing
+    is recorded and the till can simply retry, and the event's flush-to-commit window
+    stays as short as any other command's (sync pull orders events by arrival).
     """
-    order = get_order(session, order_id, location_id=device.location_id)
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
     if find_replay(
         session, command, device=device, event_type=EventType.ORDER_SENT, order_id=order_id
     ):
@@ -94,6 +99,8 @@ def send_to_kitchen(
     if order.state == VOIDED:
         raise Conflict("this order is voided", code="order_voided")
 
+    ensure_seq_free(session, device, command)
+    data = print_order(session, order_id, printer, rasterizer) if printer is not None else None
     record(
         session,
         device,
@@ -102,7 +109,6 @@ def send_to_kitchen(
         payload={"order_id": order_id},
         business_date=order.business_date,
     )
-    if printer is None:
+    if data is None:
         return KitchenOutcome(order, printed=False, ticket_bytes=0, replayed=False)
-    data = print_order(session, order_id, printer, rasterizer)
     return KitchenOutcome(order, printed=True, ticket_bytes=len(data), replayed=False)

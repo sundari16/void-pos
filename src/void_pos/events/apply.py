@@ -10,9 +10,12 @@ Two guarantees make offline-first sync safe:
   they arrive in. Conflicting order-state transitions are settled by the order state
   machine (``types.can_transition``): the first terminal transition in that canonical
   order wins; a later one is recorded as a conflict rather than overwriting it.
-* **Validated** — an event from an unknown device, for another location, reusing a seq,
-  or with a malformed payload is ``rejected`` and never reaches the log, so one bad
-  event in an offline batch can't take the rest of the batch down with it.
+* **Validated** — an event from an unknown device, for another location (or touching
+  another location's order), reusing a seq or an order number, or with a malformed
+  payload is ``rejected`` and never reaches the log, so one bad event in an offline
+  batch can't take the rest of the batch down with it. A reference to a menu item,
+  modifier or customer that doesn't exist here (deleted, or sold from a stale menu) is
+  dropped from the projection: the line's snapshot already carries what was sold.
 """
 
 from __future__ import annotations
@@ -23,11 +26,23 @@ from datetime import date, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..clock import as_aware
-from ..models import Device, Event, LoyaltyLedger, Order, OrderLine, Payment
+from ..models import (
+    Customer,
+    Device,
+    Event,
+    Location,
+    LoyaltyLedger,
+    MenuItem,
+    Modifier,
+    ModifierGroup,
+    Order,
+    OrderLine,
+    Payment,
+)
 from .payloads import PAYLOAD_SCHEMAS
 from .types import PAID, SENT, VOIDED, EventType, can_transition
 
@@ -106,14 +121,39 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
             detail = f"invalid {incoming['type']} payload: {where + ': ' if where else ''}"
             return reject("invalid_payload", detail + first["msg"])
 
-    if incoming["type"] == EventType.ORDER_PLACED:
-        number = incoming["payload"]["order_number"]
+    payload = incoming.get("payload", {})
+    location_id = incoming["location_id"]
+    event_type = incoming["type"]
+    if event_type == EventType.ORDER_PLACED:
+        number = payload["order_number"]
         if not device.order_number_start <= number <= device.order_number_end:
             return reject(
                 "order_number_out_of_range",
                 f"order number {number} is outside this device's range "
                 f"{device.order_number_start}-{device.order_number_end}",
             )
+        if session.get(Order, payload["order_id"]) is not None:
+            return reject("order_exists", "an order with this id already exists")
+        used = session.scalar(
+            select(Order.id)
+            .where(Order.device_id == device.id, Order.order_number == number)
+            .limit(1)
+        )
+        if used is not None:
+            return reject(
+                "order_number_used", f"order number {number} is already used by this device"
+            )
+    elif event_type in (EventType.ORDER_SENT, EventType.ORDER_VOIDED, EventType.ORDER_PAID):
+        order = session.get(Order, payload["order_id"])
+        if order is not None and order.location_id != location_id:
+            return reject("foreign_order", "the order belongs to another location")
+    elif event_type == EventType.LOYALTY_RECORDED:
+        if _local_customer(session, payload["customer_id"], location_id) is None:
+            return reject("unknown_customer", "the customer isn't known at this venue")
+        order_id = payload.get("order_id")
+        order = session.get(Order, order_id) if order_id else None
+        if order is not None and order.location_id != location_id:
+            return reject("foreign_order", "the order belongs to another location")
     return None
 
 
@@ -138,7 +178,7 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
             id=order_id,
             location_id=event.location_id,
             device_id=event.device_id,
-            customer_id=p.get("customer_id"),
+            customer_id=_local_customer(session, p.get("customer_id"), event.location_id),
             order_number=p["order_number"],
             business_date=event.business_date,
             channel=p["channel"],
@@ -152,8 +192,8 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
                 id=line["id"],
                 order_id=order_id,
                 parent_line_id=line.get("parent_line_id"),
-                menu_item_id=line.get("menu_item_id"),
-                modifier_id=line.get("modifier_id"),
+                menu_item_id=_local_menu_item(session, line.get("menu_item_id"), event.location_id),
+                modifier_id=_local_modifier(session, line.get("modifier_id"), event.location_id),
                 quantity=line.get("quantity", 1),
                 name_snapshot=line["name_snapshot"],
                 kitchen_name_snapshot=line.get("kitchen_name_snapshot"),
@@ -226,7 +266,7 @@ def _h_loyalty_recorded(session: Session, event: Event) -> ApplyResult:
             id=ledger_id,
             location_id=event.location_id,
             customer_id=p["customer_id"],
-            order_id=p.get("order_id"),
+            order_id=p.get("order_id") if session.get(Order, p.get("order_id") or "") else None,
             points_delta=p["points_delta"],
             reason=p["reason"],
         )
@@ -247,9 +287,43 @@ _HANDLERS: dict[str, Callable[[Session, Event], ApplyResult]] = {
 
 
 def _advance_device_seq(session: Session, event: Event) -> None:
+    """One conditional UPDATE, so two commands from the same till committing in either
+    order can never move its counter backwards."""
+    session.execute(
+        update(Device)
+        .where(Device.id == event.device_id, Device.last_seq < event.seq)
+        .values(last_seq=event.seq)
+        .execution_options(synchronize_session=False)
+    )
     device = session.get(Device, event.device_id)
-    if device is not None and event.seq > device.last_seq:
-        device.last_seq = event.seq
+    if device is not None:
+        session.expire(device, ["last_seq"])
+
+
+def _local_menu_item(session: Session, item_id: str | None, location_id: str) -> str | None:
+    if item_id is None:
+        return None
+    item = session.get(MenuItem, item_id)
+    return item_id if item is not None and item.location_id == location_id else None
+
+
+def _local_modifier(session: Session, modifier_id: str | None, location_id: str) -> str | None:
+    if modifier_id is None:
+        return None
+    modifier = session.get(Modifier, modifier_id)
+    group = session.get(ModifierGroup, modifier.group_id) if modifier is not None else None
+    return modifier_id if group is not None and group.location_id == location_id else None
+
+
+def _local_customer(session: Session, customer_id: str | None, location_id: str) -> str | None:
+    """Customers belong to the org, so any of its locations may reference them."""
+    if customer_id is None:
+        return None
+    customer = session.get(Customer, customer_id)
+    location = session.get(Location, location_id)
+    if customer is None or location is None or customer.org_id != location.org_id:
+        return None
+    return customer_id
 
 
 def _as_date(value: Any) -> date:

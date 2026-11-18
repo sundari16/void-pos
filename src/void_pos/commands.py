@@ -12,12 +12,17 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .clock import utcnow
+from .devices import next_order_number
 from .errors import Conflict, InvalidRequest
 from .events import ApplyResult, ingest_event
 from .models import Device, Event
+
+# Refusals that clash with what is already recorded, rather than malformed input.
+_CONFLICTS = frozenset({"seq_conflict", "order_exists", "order_number_used", "foreign_order"})
 
 
 @dataclass(frozen=True)
@@ -72,13 +77,32 @@ def record(
         },
     )
     if result.status == "rejected":
-        if result.code == "seq_conflict":
-            # The till's counter fell behind (e.g. its storage was cleared): tell it where
-            # the server is so it can carry on from there.
-            raise Conflict(
-                result.detail or "seq already used", code="seq_conflict", last_seq=device.last_seq
-            )
-        raise InvalidRequest(
-            result.detail or "the change was rejected", code=result.code or "invalid_request"
-        )
+        detail = result.detail or "the change was rejected"
+        code = result.code or "invalid_request"
+        if code in _CONFLICTS:
+            # Tell a till whose counters fell behind (its storage was cleared, or two tabs
+            # share it) where the server is, so it can carry on from there.
+            extra: dict[str, Any] = {}
+            if code == "seq_conflict":
+                extra["last_seq"] = device.last_seq
+            if code == "order_number_used":
+                extra["next_order_number"] = next_order_number(session, device)
+            raise Conflict(detail, code=code, **extra)
+        raise InvalidRequest(detail, code=code)
     return result
+
+
+def ensure_seq_free(session: Session, device: Device, command: Command) -> None:
+    """Refuse a reused seq up front, for commands with a side effect (printing) that
+    happens before the event is written."""
+    taken = session.scalar(
+        select(Event.event_id)
+        .where(Event.device_id == device.id, Event.seq == command.seq)
+        .limit(1)
+    )
+    if taken is not None:
+        raise Conflict(
+            f"seq {command.seq} is already used by this device",
+            code="seq_conflict",
+            last_seq=device.last_seq,
+        )

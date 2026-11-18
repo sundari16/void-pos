@@ -5,7 +5,8 @@
 // next tap resends the very same ids and the server replays the first result instead of
 // placing, printing or charging twice. A 4xx is final, so the body is dropped. A
 // seq_conflict means this till's counter fell behind the server: take a fresh seq after
-// the server's last one and resend once, keeping the event_id.
+// the server's last one and resend once, keeping the event_id; `repair` lets a command
+// fix its own body the same way (a reused order number, say).
 
 import { ApiError } from "./api";
 import type { CommandIn } from "./types";
@@ -21,6 +22,17 @@ export interface RunOptions<B extends CommandIn, R> {
   /** Resync the till's counter past `lastSeq` and return a fresh seq. */
   seqAfter: (lastSeq: number) => number;
   onUnauthorized: () => void;
+  /** Fix the body after a refusal it can recover from; null means it can't. */
+  repair?: (err: ApiError, body: B) => B | null;
+}
+
+function repaired<B extends CommandIn, R>(err: unknown, body: B, opts: RunOptions<B, R>): B | null {
+  if (!(err instanceof ApiError)) return null;
+  const lastSeq = err.body.last_seq;
+  if (err.code === "seq_conflict" && typeof lastSeq === "number") {
+    return { ...body, seq: opts.seqAfter(lastSeq) };
+  }
+  return opts.repair?.(err, body) ?? null;
 }
 
 export function isRetryable(err: unknown): boolean {
@@ -36,10 +48,9 @@ export async function runCommand<B extends CommandIn, R>(opts: RunOptions<B, R>)
       opts.pending.current = null;
       return result;
     } catch (err) {
-      const lastSeq = err instanceof ApiError ? err.body.last_seq : undefined;
-      const seqConflict = err instanceof ApiError && err.code === "seq_conflict";
-      if (attempt === 0 && seqConflict && typeof lastSeq === "number") {
-        body = { ...body, seq: opts.seqAfter(lastSeq) };
+      const fixed = attempt === 0 ? repaired(err, body, opts) : null;
+      if (fixed) {
+        body = fixed;
         opts.pending.current = body;
         continue;
       }

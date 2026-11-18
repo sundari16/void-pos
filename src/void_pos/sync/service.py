@@ -6,6 +6,12 @@ behind another till's cursor. Each till keeps its own pull cursor; a push doesn'
 it, because events from other tills can land between its last pull and its push. Push is
 idempotent (the apply layer skips a known ``event_id``), so a retried push after a flaky
 connection is safe, and one bad event is rejected without failing the rest of the batch.
+
+Known limit: ``received_at`` is taken when an event is flushed, not when it commits, so
+two transactions committing out of order within the same few milliseconds could let a
+pull step past the earlier one. Commands keep that window minimal (the kitchen ticket
+prints before its event is written); a commit-ordered sequence should replace the
+timestamp cursor before tills rely on pull for offline catch-up.
 """
 
 from __future__ import annotations

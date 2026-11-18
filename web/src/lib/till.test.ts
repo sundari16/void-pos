@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   clearTill,
   loadTill,
+  mergeCounters,
   RangeExhausted,
   refreshTill,
+  resyncOrderNumber,
   resyncSeq,
   saveTill,
   takeOrderNumber,
@@ -70,6 +72,15 @@ describe("till counters", () => {
     expect([refreshed.nextSeq, refreshed.nextOrderNumber]).toEqual([50, 1002]);
     expect(resyncSeq(till, 10).nextSeq).toBe(50);
     expect(resyncSeq(till, 80).nextSeq).toBe(81);
+    expect(resyncOrderNumber(till, 1001).nextOrderNumber).toBe(1002);
+  });
+
+  it("merge with another tab's progress, never with another till's", () => {
+    const here = { ...tillFromPairing(pairing), nextSeq: 7, nextOrderNumber: 1001 };
+    const otherTab = { ...here, nextSeq: 9, nextOrderNumber: 1001 };
+    expect(mergeCounters(here, otherTab).nextSeq).toBe(9);
+    expect(mergeCounters(here, { ...otherTab, token: "someone-else" })).toBe(here);
+    expect(mergeCounters(here, null)).toBe(here);
   });
 });
 

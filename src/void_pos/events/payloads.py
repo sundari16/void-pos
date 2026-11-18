@@ -2,7 +2,9 @@
 
 Every event is validated against its schema before it reaches the log, whether it came
 from an online command or a device's offline sync batch. Unknown keys are tolerated so a
-newer device can send extra fields to an older server.
+newer device can send extra fields to an older server. Money and counts are strict
+(``"1001"`` is not an order number), so the stored payload is exactly what passed
+validation and the projection can read it as-is.
 """
 
 from __future__ import annotations
@@ -32,11 +34,11 @@ class OrderLineIn(_Payload):
     parent_line_id: Ulid | None = None
     menu_item_id: Ulid | None = None
     modifier_id: Ulid | None = None
-    quantity: int = Field(default=1, ge=1, le=999)
+    quantity: int = Field(default=1, ge=1, le=999, strict=True)
     name_snapshot: str = Field(min_length=1, max_length=200)
     kitchen_name_snapshot: str | None = Field(default=None, max_length=200)
-    unit_price_cents: int = Field(ge=-MAX_LINE_CENTS, le=MAX_LINE_CENTS)
-    tax_rate_snapshot: float = Field(default=0, ge=0, le=1)
+    unit_price_cents: int = Field(ge=-MAX_LINE_CENTS, le=MAX_LINE_CENTS, strict=True)
+    tax_rate_snapshot: float = Field(default=0, ge=0, le=1, strict=True)
     category_snapshot: str | None = Field(default=None, max_length=120)
 
 
@@ -62,7 +64,7 @@ def check_line_tree(lines: list[OrderLineIn]) -> None:
 
 class OrderPlaced(_Payload):
     order_id: Ulid
-    order_number: int = Field(ge=1)
+    order_number: int = Field(ge=1, strict=True)
     channel: Channel
     fulfillment: Fulfillment
     customer_id: Ulid | None = None
@@ -82,7 +84,7 @@ class PaymentIn(_Payload):
     id: Ulid
     provider: str = Field(min_length=1, max_length=40)
     external_ref: str | None = Field(default=None, max_length=200)
-    amount_cents: int = Field(ge=0, le=100 * MAX_LINE_CENTS)
+    amount_cents: int = Field(ge=0, le=100 * MAX_LINE_CENTS, strict=True)
     currency: str = Field(default="AUD", pattern=CURRENCY_PATTERN)
     status: Literal["captured", "pending", "failed"] = "captured"
 
@@ -96,7 +98,7 @@ class LoyaltyRecorded(_Payload):
     id: Ulid
     customer_id: Ulid
     order_id: Ulid | None = None
-    points_delta: int
+    points_delta: int = Field(strict=True)
     reason: str = Field(min_length=1, max_length=80)
 
 

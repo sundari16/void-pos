@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..ids import new_ulid
@@ -14,6 +14,10 @@ class Order(Base, TimestampMixin):
     """Projected order header. Built by folding events — not written to directly in prod."""
 
     __tablename__ = "pos_order"
+    # A till never reuses an order number: it's what the kitchen calls out.
+    __table_args__ = (
+        UniqueConstraint("device_id", "order_number", name="uq_order_device_number"),
+    )
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
     location_id: Mapped[str] = mapped_column(ForeignKey("location.id"), nullable=False, index=True)
