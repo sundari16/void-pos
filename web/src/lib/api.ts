@@ -3,15 +3,20 @@
 
 import { apiBase } from "./config";
 import type {
+  AddLinesRequest,
+  AvailabilityRequest,
   Closeout,
   CommandIn,
   DeviceSession,
   KitchenResponse,
+  MenuItem,
   OrderResponse,
+  OrderSummary,
   PairResponse,
   PayRequest,
   PaymentResponse,
   PlaceOrderRequest,
+  ReceiptOut,
   TillMenu,
   VoidRequest,
   VoidResponse,
@@ -92,6 +97,25 @@ export function createApi(fetchImpl: Fetch = (input, init) => fetch(input, init)
     },
     placeOrder(token: string, body: PlaceOrderRequest): Promise<OrderResponse> {
       return request("/orders", { method: "POST", token, body });
+    },
+    /** The location's unsettled orders (open or sent), newest first. */
+    openOrders(token: string, locationId: string): Promise<OrderSummary[]> {
+      return request(`/locations/${locationId}/orders`, { token });
+    },
+    getOrder(token: string, orderId: string): Promise<OrderResponse> {
+      return request(`/orders/${orderId}`, { token });
+    },
+    addLines(token: string, orderId: string, body: AddLinesRequest): Promise<OrderResponse> {
+      return request(`/orders/${orderId}/lines`, { method: "POST", token, body });
+    },
+    receipt(token: string, orderId: string): Promise<ReceiptOut> {
+      return request(`/orders/${orderId}/receipt`, { token });
+    },
+    printReceipt(token: string, orderId: string): Promise<{ printed: boolean }> {
+      return request(`/orders/${orderId}/print-receipt`, { method: "POST", token });
+    },
+    setAvailability(token: string, itemId: string, body: AvailabilityRequest): Promise<MenuItem> {
+      return request(`/menu/items/${itemId}/availability`, { method: "POST", token, body });
     },
     sendToKitchen(token: string, orderId: string, body: CommandIn): Promise<KitchenResponse> {
       return request(`/orders/${orderId}/send-to-kitchen`, { method: "POST", token, body });

@@ -27,11 +27,14 @@ export function MenuGrid({
   items,
   now,
   onPick,
+  manage = false,
 }: {
   items: TillMenuItem[];
   /** Local time at the location, "HH:MM:SS". */
   now: string;
   onPick: (item: TillMenuItem) => void;
+  /** Sold-out mode: every item is tappable, to switch it off or back on. */
+  manage?: boolean;
 }) {
   if (items.length === 0) {
     return (
@@ -58,13 +61,22 @@ export function MenuGrid({
                 <button
                   key={item.id}
                   onClick={() => onPick(item)}
-                  disabled={!onSale}
+                  disabled={!onSale && !manage}
+                  aria-pressed={manage ? !item.is_available : undefined}
                   className="flex min-h-20 flex-col justify-between rounded-xl border border-border bg-surface p-3 text-left transition hover:border-accent hover:shadow-sm active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-border disabled:hover:shadow-none"
                 >
                   <span className="font-medium leading-tight">{item.name}</span>
                   <span className="mt-2 flex items-baseline justify-between gap-2 text-sm text-muted">
                     <span>{formatCents(item.base_price_cents)}</span>
-                    {!onSale && why && <span className="text-xs">{why}</span>}
+                    {manage ? (
+                      <span
+                        className={`text-xs font-semibold ${item.is_available ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-300"}`}
+                      >
+                        {item.is_available ? "On" : "Sold out"}
+                      </span>
+                    ) : (
+                      !onSale && why && <span className="text-xs">{why}</span>
+                    )}
                   </span>
                 </button>
               );

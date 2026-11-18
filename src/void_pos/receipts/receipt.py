@@ -4,6 +4,7 @@ included, and the words "Tax invoice". Without one it is a plain receipt."""
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import as_aware, utcnow
 from ..devices import get_location
+from ..models import OrderLine
 from ..orders.views import OrderView
 from ..totals import extended_quantities
 from .venue import format_abn
@@ -62,6 +64,16 @@ def build_receipt(session: Session, view: OrderView) -> Receipt:
     order = view.order
     location = get_location(session, order.location_id)
     qty = extended_quantities(view.lines)
+    children: dict[str, list[OrderLine]] = defaultdict(list)
+    for line in view.lines:
+        if line.parent_line_id is not None:
+            children[line.parent_line_id].append(line)
+    ordered = [
+        line
+        for item in view.lines
+        if item.parent_line_id is None
+        for line in (item, *children[item.id])
+    ]
     lines = [
         ReceiptLine(
             quantity=line.quantity,
@@ -69,7 +81,7 @@ def build_receipt(session: Session, view: OrderView) -> Receipt:
             amount_cents=line.unit_price_cents * qty[line.id],
             is_modifier=line.parent_line_id is not None,
         )
-        for line in view.lines
+        for line in ordered
     ]
     payments = [
         ReceiptPayment(

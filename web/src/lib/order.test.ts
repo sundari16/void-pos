@@ -50,6 +50,7 @@ describe("draft orders", () => {
       category_snapshot: "Mains",
     });
     expect(modLine.id).not.toBe(itemLine.id);
+    expect(itemLine.id < modLine.id).toBe(true); // sorts item first
   });
 
   it("total like the server: modifiers are charged per unit of their item", () => {

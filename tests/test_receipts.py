@@ -53,6 +53,9 @@ def test_abns_are_checked() -> None:
 
 def _order(c: TestClient, venue: Venue, **extra: Any) -> dict[str, Any]:
     body = order_body(venue, seq=1, **extra)
+    # A till may mint a modifier's id before its item's: the receipt still lists the item
+    # first.
+    body["lines"][1]["id"] = "00000000000000000000000000"
     body["lines"][0]["tax_rate_snapshot"] = 0.1
     body["lines"][1]["unit_price_cents"] = 150  # a paid modifier: 2 x 150
     r = c.post("/orders", json=body, headers=auth(venue.token))

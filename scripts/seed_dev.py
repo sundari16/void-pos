@@ -33,6 +33,8 @@ from sqlalchemy.orm import Session
 from void_pos.devices import issue_pairing_code
 from void_pos.menu.modifier_import import import_modifiers, parse_modifier_csv
 from void_pos.models import Base, Device, Location, MenuItem, Org
+from void_pos.receipts import update_venue
+from void_pos.staff import create_staff, list_staff
 
 DEFAULT_URL = "sqlite:///./void_pos_dev.db"
 PAIRING_TTL = timedelta(hours=1)  # generous for a dev box
@@ -45,18 +47,19 @@ ORDER_NUMBER_END = 1999
 
 # (name, cents, category, tax_rate, kitchen_name)
 MENU: list[tuple[str, int, str, float, str | None]] = [
-    ("Masala Dosa", 1850, "Mains", 0.0, "மசாலா தோசை"),
-    ("Butter Chicken", 2200, "Mains", 0.0, None),
-    ("Paneer Tikka", 1900, "Mains", 0.0, None),
-    ("Lamb Biryani", 2400, "Mains", 0.0, None),
-    ("Vegetable Samosa", 700, "Sides", 0.0, None),
-    ("Garlic Naan", 450, "Sides", 0.0, None),
-    ("Papadum", 300, "Sides", 0.0, None),
-    ("Mango Lassi", 650, "Drinks", 0.0, None),
-    ("Masala Chai", 400, "Drinks", 0.0, None),
-    ("Sparkling Water", 350, "Drinks", 0.0, None),
-    ("Gulab Jamun", 600, "Dessert", 0.0, None),
+    ("Masala Dosa", 1850, "Mains", 0.1, "மசாலா தோசை"),
+    ("Butter Chicken", 2200, "Mains", 0.1, None),
+    ("Paneer Tikka", 1900, "Mains", 0.1, None),
+    ("Lamb Biryani", 2400, "Mains", 0.1, None),
+    ("Vegetable Samosa", 700, "Sides", 0.1, None),
+    ("Garlic Naan", 450, "Sides", 0.1, None),
+    ("Papadum", 300, "Sides", 0.1, None),
+    ("Mango Lassi", 650, "Drinks", 0.1, None),
+    ("Masala Chai", 400, "Drinks", 0.1, None),
+    ("Sparkling Water", 350, "Drinks", 0.1, None),
+    ("Gulab Jamun", 600, "Dessert", 0.1, None),
 ]
+DEV_MANAGER_PIN = "1234"  # dev data only: approves voids and sold-out on the dev till
 LUNCH_ONLY = ("Thali", 2600, "Mains", time(11), time(15))  # sold 11:00 to 15:00 local
 
 MODIFIERS = """group,min,max,modifier,price,kitchen_name,items
@@ -122,10 +125,21 @@ def seed(session: Session) -> dict[str, str]:
                 category=category,
                 available_from=start,
                 available_to=end,
+                tax_rate=0.1,
             )
         )
         session.flush()
     import_modifiers(session, location.id, parse_modifier_csv(MODIFIERS))
+    if not list_staff(session, location.id):
+        create_staff(
+            session, location_id=location.id, name="Dev Manager", role="manager", pin=DEV_MANAGER_PIN
+        )
+    # The ATO's worked-example ABN: passes the check, belongs to nobody real.
+    update_venue(
+        session,
+        location.id,
+        {"business_name": ORG_NAME, "abn": "51 824 753 556", "receipt_footer": "Dev data only"},
+    )
 
     code = issue_pairing_code(session, device, ttl=PAIRING_TTL)
     session.commit()
@@ -146,6 +160,7 @@ def main() -> None:
     print(f"  till         : {DEVICE_NAME} ({ids['device']})")
     print(f"  orders       : {ORDER_NUMBER_START}-{ORDER_NUMBER_END}")
     print(f"  pairing code : {ids['pairing_code']}  (works once, for the next hour)")
+    print(f"  manager PIN  : {DEV_MANAGER_PIN}  (dev only: voids and sold-out)")
     print("\nStart the API on this database, open the web POS and enter the pairing code.\n")
 
 
