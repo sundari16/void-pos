@@ -73,10 +73,13 @@ def list_orders(
     *,
     states: Sequence[str] = UNSETTLED,
     business_date: date | None = None,
-    limit: int = 200,
+    limit: int | None = 200,
 ) -> list[Order]:
-    """A location's orders in the given states, newest first."""
+    """A location's orders in the given states, newest first (all of them with no limit)."""
     stmt = select(Order).where(Order.location_id == location_id, Order.state.in_(states))
     if business_date is not None:
         stmt = stmt.where(Order.business_date == business_date)
-    return list(session.scalars(stmt.order_by(Order.id.desc()).limit(limit)).all())
+    stmt = stmt.order_by(Order.id.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt).all())

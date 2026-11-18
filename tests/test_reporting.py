@@ -103,6 +103,12 @@ def test_shift_closeout_totals() -> None:
         report = shift_closeout(s, ids["loc"], TODAY)
 
         assert report["gross_sales_cents"] == 5400
+        # No tax rates on these lines, so no GST; nothing left owing on the day.
+        assert (report["paid_sales_cents"], report["gst_cents"], report["open_balance_cents"]) == (
+            5400,
+            0,
+            0,
+        )
         assert report["payments_by_provider"] == {"cash": 4800, "external": 600}
         assert report["orders"] == {"total": 4, "open": 0, "sent": 0, "paid": 3, "voided": 1}
 
@@ -155,3 +161,37 @@ def test_revenue_by_class_handles_big_extended_quantities() -> None:
         assert shift_closeout(s, ids["loc"], TODAY)["revenue_by_class_cents"]["Catering"] == (
             999 * 999 * 10_000
         )
+
+
+def test_closeout_reports_gst_and_what_is_still_owing() -> None:
+    with _session() as s:
+        ids = _seed_day(s)
+
+        def ev(seq: int, type_: str, payload: dict[str, Any]) -> None:
+            ingest_event(s, {
+                "event_id": new_ulid(), "device_id": ids["device"], "seq": seq,
+                "location_id": ids["loc"], "business_date": TODAY,
+                "occurred_at": T0 + timedelta(seconds=seq), "type": type_, "payload": payload,
+            })
+
+        taxed, owing = new_ulid(), new_ulid()
+        ev(20, "order.placed", {
+            "order_id": taxed, "order_number": 1010, "channel": "pos", "fulfillment": "dine_in",
+            "lines": [{"id": new_ulid(), "quantity": 2, "name_snapshot": "Thali",
+                       "unit_price_cents": 2200, "tax_rate_snapshot": 0.1}]})
+        ev(21, "order.paid", {"order_id": taxed, "payment": {
+            "id": new_ulid(), "provider": "cash", "amount_cents": 4400}})
+        ev(22, "order.placed", {
+            "order_id": owing, "order_number": 1011, "channel": "pos", "fulfillment": "dine_in",
+            "lines": [{"id": new_ulid(), "quantity": 1, "name_snapshot": "Lassi",
+                       "unit_price_cents": 650, "tax_rate_snapshot": 0.1}]})
+        ev(23, "order.paid", {"order_id": owing, "payment": {
+            "id": new_ulid(), "provider": "cash", "amount_cents": 200}})
+        s.commit()
+
+        report = shift_closeout(s, ids["loc"], TODAY)
+        assert report["paid_sales_cents"] == 5400 + 4400
+        assert report["gst_cents"] == 400  # 4400 / 11
+        assert report["sales_ex_gst_cents"] == 5400 + 4000
+        assert report["open_balance_cents"] == 450
+        assert report["gross_sales_cents"] == 5400 + 4400 + 200  # money taken, part payments too

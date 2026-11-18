@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, aliased
 
 from ..errors import NotFound
 from ..models import Location, Order, OrderLine, Payment
+from ..orders.views import UNSETTLED, OrderView, list_orders, order_views
 
 
 def payments_by_provider(session: Session, location_id: str, business_date: date) -> dict[str, int]:
@@ -68,6 +69,27 @@ def _order_counts(session: Session, location_id: str, business_date: date) -> di
     }
 
 
+def sales_and_gst(session: Session, location_id: str, business_date: date) -> dict[str, int]:
+    """Paid orders' sales and the GST inside them (prices include GST), with GST rounded
+    per order exactly as each receipt shows it, plus what is still owing on the day's
+    unsettled orders."""
+    def day(states: tuple[str, ...]) -> list[OrderView]:
+        orders = list_orders(
+            session, location_id, states=states, business_date=business_date, limit=None
+        )
+        return order_views(session, orders)
+
+    paid, unsettled = day(("paid",)), day(UNSETTLED)
+    sales = sum(v.total_cents for v in paid)
+    gst = sum(v.gst_cents for v in paid)
+    return {
+        "paid_sales_cents": sales,
+        "gst_cents": gst,
+        "sales_ex_gst_cents": sales - gst,
+        "open_balance_cents": sum(v.balance_cents for v in unsettled),
+    }
+
+
 def shift_closeout(session: Session, location_id: str, business_date: date) -> dict[str, Any]:
     """End-of-shift reconciliation for a location and business date."""
     if session.get(Location, location_id) is None:
@@ -80,6 +102,7 @@ def shift_closeout(session: Session, location_id: str, business_date: date) -> d
         "generated_at": datetime.now(UTC).isoformat(),
         "orders": _order_counts(session, location_id, business_date),
         "gross_sales_cents": sum(by_provider.values()),
+        **sales_and_gst(session, location_id, business_date),
         "payments_by_provider": by_provider,
         "revenue_by_class_cents": revenue_class_sales(session, location_id, business_date),
     }
