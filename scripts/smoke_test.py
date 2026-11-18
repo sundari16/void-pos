@@ -15,7 +15,6 @@ import argparse
 import json
 import os
 import secrets
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -159,13 +158,7 @@ def main() -> None:
     args = parser.parse_args()
     if not args.admin_token:
         parser.error("pass --admin-token or set VOIDPOS_ADMIN_TOKEN")
-    try:
-        run(args.api, args.admin_token, args.wait)
-    except SystemExit:
-        raise
-    except Exception as exc:  # report, don't traceback, in CI logs
-        print(f"FAIL  {type(exc).__name__}: {exc}")
-        sys.exit(1)
+    run(args.api, args.admin_token, args.wait)
 
 
 if __name__ == "__main__":
