@@ -14,6 +14,8 @@ export interface Till {
   locationId: string;
   locationName: string;
   timezone: string;
+  /** The public-holiday surcharge the till offers (1500 = 15%), if the venue set one. */
+  holidaySurchargeBp?: number | null;
   orderNumberStart: number;
   orderNumberEnd: number;
   nextSeq: number;
@@ -53,6 +55,7 @@ function fromSession(session: DeviceSession) {
     locationId: session.location.id,
     locationName: session.location.name,
     timezone: session.location.timezone,
+    holidaySurchargeBp: session.location.holiday_surcharge_bp ?? null,
     orderNumberStart: session.device.order_number_start,
     orderNumberEnd: session.device.order_number_end,
   };

@@ -13,20 +13,32 @@ import {
   toLineIns,
   type DraftItem,
 } from "@/lib/order";
-import { isUnsettled, sendLabel, withKitchen, withPayment, withVoid } from "@/lib/placed";
+import {
+  isUnsettled,
+  refundable,
+  sendLabel,
+  withKitchen,
+  withPayment,
+  withVoid,
+} from "@/lib/placed";
 import type {
   AddLinesRequest,
+  AdjustRequest,
   CommandIn,
   KitchenResponse,
+  OrderLineOut,
   OrderResponse,
   PayRequest,
   PlaceOrderRequest,
+  RefundRequest,
+  RemoveLinesRequest,
   TillMenu,
   TillMenuItem,
   VoidRequest,
   VoidResponse,
 } from "@/lib/types";
 import { ulid } from "@/lib/ulid";
+import { AdjustPanel, type NewAdjustment } from "@/components/AdjustPanel";
 import { ItemDialog } from "@/components/ItemDialog";
 import { MenuGrid } from "@/components/MenuGrid";
 import { OpenOrders } from "@/components/OpenOrders";
@@ -36,6 +48,8 @@ import { PaymentPanel } from "@/components/PaymentPanel";
 import { PinPrompt } from "@/components/PinPrompt";
 import { PlacedLines } from "@/components/PlacedLines";
 import { ReceiptDialog } from "@/components/ReceiptDialog";
+import { RefundDialog, type RefundChoice } from "@/components/RefundDialog";
+import { RemoveItemDialog } from "@/components/RemoveItemDialog";
 import { VoidPanel } from "@/components/VoidPanel";
 import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
@@ -63,7 +77,18 @@ interface PinAsk {
   resolve: (pin: string | null) => void;
 }
 
-type Busy = null | "place" | "add" | "kitchen" | "pay" | "void" | "open" | "menu";
+type Busy =
+  | null
+  | "place"
+  | "add"
+  | "kitchen"
+  | "pay"
+  | "void"
+  | "open"
+  | "menu"
+  | "remove"
+  | "adjust"
+  | "refund";
 
 export default function PosPage() {
   const { till, ready, command, orderNumber, orderNumberAfter, seqAfter, unpair } = useTill();
@@ -85,6 +110,8 @@ export default function PosPage() {
   const [showOpen, setShowOpen] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [pinAsk, setPinAsk] = useState<PinAsk | null>(null);
+  const [removing, setRemoving] = useState<OrderLineOut | null>(null);
+  const [showRefund, setShowRefund] = useState(false);
 
   // A command's body (and so its ids) lives here until the server answers, so tapping
   // again after a dropped connection resends the same ids and can't duplicate anything.
@@ -93,6 +120,10 @@ export default function PosPage() {
   const pendingKitchen = useRef<CommandIn | null>(null);
   const pendingPay = useRef<PayRequest | null>(null);
   const pendingVoid = useRef<VoidRequest | null>(null);
+  const pendingRemove = useRef<RemoveLinesRequest | null>(null);
+  const pendingAdjust = useRef<AdjustRequest | null>(null);
+  const pendingUnadjust = useRef<CommandIn | null>(null);
+  const pendingRefund = useRef<RefundRequest | null>(null);
 
   const token = till?.token;
   const locationId = till?.locationId;
@@ -289,7 +320,7 @@ export default function PosPage() {
 
   /** Pay the order. An unconfirmed earlier attempt is always resent as it was, whichever
    *  button is pressed, so a dropped connection can't turn into a second charge. */
-  async function pay(method: PayMethod, amountCents: number, externalRef?: string) {
+  async function pay(method: PayMethod, amountCents: number, externalRef?: string, tipCents = 0) {
     if (!till || !order) return;
     setBusy("pay");
     setActionError(null);
@@ -301,6 +332,7 @@ export default function PosPage() {
           payment_id: ulid(),
           method,
           amount_cents: amountCents,
+          tip_cents: tipCents,
           external_ref: method === "external" ? externalRef : null,
         }),
         (body) => api.payOrder(till.token, order.id, body),
@@ -328,6 +360,101 @@ export default function PosPage() {
         ),
       );
       if (voided) update(order.id, (p) => ({ ...p, order: withVoid(p.order, voided), voided }));
+    } catch (err) {
+      failed(err);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Take an item off: a manager's PIN if the kitchen has it (and the venue has managers). */
+  async function removeLine(line: OrderLineOut, reason: string) {
+    if (!till || !order) return;
+    setBusy("remove");
+    setActionError(null);
+    try {
+      const updated = await withApproval(`Take off ${line.name}`, (pin) =>
+        send(
+          pendingRemove,
+          (): RemoveLinesRequest => ({
+            ...command(),
+            line_ids: [line.id],
+            reason,
+            manager_pin: pin ?? null,
+          }),
+          (body) => api.removeLines(till.token, order.id, body),
+        ),
+      );
+      if (updated) update(order.id, (p) => ({ ...p, order: updated }));
+      setRemoving(null);
+    } catch (err) {
+      failed(err);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function addAdjustment(adj: NewAdjustment) {
+    if (!till || !order) return;
+    setBusy("adjust");
+    setActionError(null);
+    const title = adj.kind === "discount" ? "Approve the discount" : "Add the surcharge";
+    try {
+      const updated = await withApproval(title, (pin) =>
+        send(
+          pendingAdjust,
+          (): AdjustRequest => ({ ...command(), id: ulid(), ...adj, manager_pin: pin ?? null }),
+          (body) => api.adjust(till.token, order.id, body),
+        ),
+      );
+      if (updated) update(order.id, (p) => ({ ...p, order: updated }));
+    } catch (err) {
+      failed(err);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function takeOffAdjustment(adjustmentId: string) {
+    if (!till || !order) return;
+    setBusy("adjust");
+    setActionError(null);
+    try {
+      const updated = await send(pendingUnadjust, command, (body) =>
+        api.removeAdjustment(till.token, order.id, adjustmentId, body),
+      );
+      update(order.id, (p) => ({ ...p, order: updated }));
+    } catch (err) {
+      failed(err);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function refund(choice: RefundChoice) {
+    if (!till || !order) return;
+    setBusy("refund");
+    setActionError(null);
+    try {
+      const updated = await withApproval(`Refund order #${order.order_number}`, (pin) =>
+        send(
+          pendingRefund,
+          (): RefundRequest => ({
+            ...command(),
+            refund_id: ulid(),
+            payment_id: choice.paymentId,
+            amount_cents: choice.amountCents,
+            reason: choice.reason,
+            external_ref: choice.externalRef,
+            manager_pin: pin ?? null,
+          }),
+          (body) => api.refund(till.token, order.id, body),
+        ),
+      );
+      if (updated) {
+        update(order.id, (p) => ({ ...p, order: updated }));
+        setShowRefund(false);
+      }
     } catch (err) {
       failed(err);
     } finally {
@@ -377,6 +504,12 @@ export default function PosPage() {
     pendingKitchen.current = null;
     pendingPay.current = null;
     pendingVoid.current = null;
+    pendingRemove.current = null;
+    pendingAdjust.current = null;
+    pendingUnadjust.current = null;
+    pendingRefund.current = null;
+    setRemoving(null);
+    setShowRefund(false);
     setDraft([]);
     setPlaced(next);
     setActionError(null);
@@ -489,7 +622,12 @@ export default function PosPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-4">
-            {order && <PlacedLines lines={order.lines} />}
+            {order && (
+              <PlacedLines
+                lines={order.lines}
+                onRemove={canAdd && draft.length === 0 && busy === null ? setRemoving : undefined}
+              />
+            )}
             {order && draft.length > 0 && (
               <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">
                 Adding
@@ -529,6 +667,26 @@ export default function PosPage() {
               </div>
             )}
 
+            {order && isUnsettled(order) && draft.length === 0 && (
+              <AdjustPanel
+                adjustments={order.adjustments}
+                holidaySurchargeBp={till.holidaySurchargeBp}
+                busy={busy !== null}
+                onAdd={(adj) => void addAdjustment(adj)}
+                onRemove={(id) => void takeOffAdjustment(id)}
+              />
+            )}
+            {order && !isUnsettled(order) && order.adjustments.length > 0 && (
+              <ul className="space-y-0.5 text-sm text-muted">
+                {order.adjustments.map((a) => (
+                  <li key={a.id} className="flex justify-between">
+                    <span>{a.label ?? (a.kind === "discount" ? "Discount" : "Surcharge")}</span>
+                    <span className="tabular-nums">{formatCents(a.amount_cents)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
             {unconfirmed && (
               <p className="text-xs text-muted">
                 Held as it is until the server confirms it; tap again to retry.
@@ -557,12 +715,21 @@ export default function PosPage() {
                 {order.payments.map((p) => (
                   <li key={p.payment_id}>
                     Paid {formatCents(p.amount_cents)} · {providerLabel(p.provider)}
+                    {p.tip_cents > 0 && ` · tip ${formatCents(p.tip_cents)}`}
+                  </li>
+                ))}
+                {order.refunds.map((r) => (
+                  <li key={r.refund_id} className="text-red-700 dark:text-red-300">
+                    Refunded {formatCents(r.amount_cents)} · {providerLabel(r.provider)} ·{" "}
+                    {r.reason}
                   </li>
                 ))}
                 <li className="font-semibold">
-                  {order.balance_cents > 0
-                    ? `${formatCents(order.balance_cents)} still owing`
-                    : "Paid in full"}
+                  {order.state === "refunded"
+                    ? "Refunded in full"
+                    : order.balance_cents > 0
+                      ? `${formatCents(order.balance_cents)} still owing`
+                      : "Paid in full"}
                 </li>
               </ul>
             )}
@@ -618,7 +785,7 @@ export default function PosPage() {
                     balanceCents={order.balance_cents}
                     busy={busy === "pay"}
                     retryMethod={pendingPay.current?.method ?? null}
-                    onPay={(method, amount, ref) => void pay(method, amount, ref)}
+                    onPay={(method, amount, ref, tip) => void pay(method, amount, ref, tip)}
                   />
                 )}
                 {isUnsettled(order) && draft.length > 0 && (
@@ -630,6 +797,15 @@ export default function PosPage() {
                     retrying={pendingVoid.current !== null}
                     onVoid={voidOrder}
                   />
+                )}
+                {order.state === "paid" && refundable(order).length > 0 && (
+                  <button
+                    onClick={() => setShowRefund(true)}
+                    disabled={busy !== null}
+                    className="w-full rounded-xl px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-950/40"
+                  >
+                    Refund
+                  </button>
                 )}
                 <div className="grid grid-cols-2 gap-2">
                   <button
@@ -674,6 +850,23 @@ export default function PosPage() {
           load={() => api.receipt(till.token, order.id)}
           print={() => api.printReceipt(till.token, order.id)}
           onClose={() => setShowReceipt(false)}
+        />
+      )}
+      {removing && (
+        <RemoveItemDialog
+          name={removing.name}
+          sent={removing.sent}
+          busy={busy === "remove"}
+          onRemove={(reason) => void removeLine(removing, reason)}
+          onClose={() => setRemoving(null)}
+        />
+      )}
+      {showRefund && order && (
+        <RefundDialog
+          order={order}
+          busy={busy === "refund"}
+          onRefund={(choice) => void refund(choice)}
+          onClose={() => setShowRefund(false)}
         />
       )}
       {pinAsk && (

@@ -118,12 +118,26 @@ function Paper({ receipt }: { receipt: ReceiptOut }) {
             />
           ))}
           <hr className="my-2 border-dashed border-black" />
+          {receipt.subtotal_cents !== null && (
+            <>
+              <Row left="Subtotal" right={formatCents(receipt.subtotal_cents)} />
+              {receipt.adjustments.map((a, i) => (
+                <Row key={i} left={a.name} right={formatCents(a.amount_cents)} />
+              ))}
+            </>
+          )}
           <Row left="TOTAL" right={formatCents(receipt.total_cents)} bold />
           <Row left="Includes GST" right={formatCents(receipt.gst_cents)} />
           {receipt.payments.map((p, i) => (
             <div key={i}>
               <Row left={p.label} right={formatCents(p.amount_cents)} />
               {p.reference && <p className="pl-4 text-xs">Ref {p.reference}</p>}
+            </div>
+          ))}
+          {receipt.refunds.map((r, i) => (
+            <div key={`r${i}`}>
+              <Row left={r.label} right={formatCents(r.amount_cents)} />
+              {r.reference && <p className="pl-4 text-xs">Ref {r.reference}</p>}
             </div>
           ))}
           {receipt.balance_cents > 0 && !receipt.voided && (

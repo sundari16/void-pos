@@ -4,8 +4,15 @@ import { formatCents, formatDelta } from "@/lib/money";
 import { placedItemCents, placedItems } from "@/lib/placed";
 import type { OrderLineOut } from "@/lib/types";
 
-/** What is already on a placed order, read-only, marking what the kitchen hasn't had. */
-export function PlacedLines({ lines }: { lines: OrderLineOut[] }) {
+/** What is already on a placed order, marking what the kitchen hasn't had. With
+ *  ``onRemove``, each item can be taken off. */
+export function PlacedLines({
+  lines,
+  onRemove,
+}: {
+  lines: OrderLineOut[];
+  onRemove?: (line: OrderLineOut) => void;
+}) {
   return (
     <ul className="divide-y divide-border">
       {placedItems(lines).map(({ line, modifiers }) => (
@@ -31,8 +38,17 @@ export function PlacedLines({ lines }: { lines: OrderLineOut[] }) {
               </ul>
             )}
           </div>
-          <span className="shrink-0 tabular-nums">
+          <span className="flex shrink-0 items-center gap-1 tabular-nums">
             {formatCents(placedItemCents({ line, modifiers }))}
+            {onRemove && (
+              <button
+                onClick={() => onRemove(line)}
+                aria-label={`Take off ${line.name}`}
+                className="rounded px-1.5 text-lg leading-none text-muted hover:bg-background hover:text-red-600"
+              >
+                ×
+              </button>
+            )}
           </span>
         </li>
       ))}

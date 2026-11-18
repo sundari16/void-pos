@@ -105,15 +105,39 @@ export interface OrderLineOut {
   course_number: number | null;
   /** The kitchen has it. */
   sent: boolean;
+  /** Taken off the order; left out of every total. */
+  removed: boolean;
 }
 
 export interface PaymentOut {
   payment_id: string;
   provider: string;
   external_ref: string | null;
+  /** Toward the order. */
   amount_cents: number;
+  tip_cents: number;
   currency: string;
   status: string;
+}
+
+export interface AdjustmentOut {
+  id: string;
+  kind: "discount" | "surcharge";
+  basis: "percent" | "amount";
+  /** Basis points (1000 = 10%), or cents. */
+  value: number;
+  label: string | null;
+  /** What it comes to now: negative for a discount. */
+  amount_cents: number;
+}
+
+export interface RefundOut {
+  refund_id: string;
+  payment_id: string;
+  amount_cents: number;
+  reason: string;
+  provider: string;
+  external_ref: string | null;
 }
 
 /** An order in a list (GET /locations/{id}/orders). */
@@ -125,17 +149,48 @@ export interface OrderSummary {
   table_label: string | null;
   business_date: string;
   created_at: string;
+  /** The items, before discounts and surcharges. */
+  subtotal_cents: number;
   total_cents: number;
   gst_cents: number;
   balance_cents: number;
+  tips_cents: number;
+  refunded_cents: number;
   unsent_lines: number;
 }
 
 /** The whole order (place, add items, read). */
 export interface OrderResponse extends OrderSummary {
   lines: OrderLineOut[];
+  adjustments: AdjustmentOut[];
   payments: PaymentOut[];
+  refunds: RefundOut[];
   replayed: boolean;
+}
+
+export interface RemoveLinesRequest extends CommandIn {
+  line_ids: string[];
+  reason: string;
+  manager_pin?: string | null;
+}
+
+export interface AdjustRequest extends CommandIn {
+  id: string;
+  kind: "discount" | "surcharge";
+  basis: "percent" | "amount";
+  value: number;
+  label?: string | null;
+  manager_pin?: string | null;
+}
+
+export interface RefundRequest extends CommandIn {
+  refund_id: string;
+  payment_id: string;
+  amount_cents: number;
+  reason: string;
+  /** The card terminal's refund reference, for a card-on-terminal payment. */
+  external_ref?: string | null;
+  manager_pin?: string | null;
 }
 
 export interface KitchenResponse {
@@ -174,6 +229,9 @@ export interface ReceiptOut {
   gst_cents: number;
   payments: { label: string; amount_cents: number; reference: string | null }[];
   balance_cents: number;
+  subtotal_cents: number | null;
+  adjustments: { quantity: number; name: string; amount_cents: number; is_modifier: boolean }[];
+  refunds: { label: string; amount_cents: number; reference: string | null }[];
   voided: boolean;
   footer: string | null;
 }
@@ -190,6 +248,8 @@ export interface PayRequest extends CommandIn {
   method: "cash" | "external";
   external_ref?: string | null;
   amount_cents?: number | null;
+  /** On top of the amount; not part of sales. */
+  tip_cents?: number;
   currency?: string;
 }
 
@@ -198,6 +258,7 @@ export interface PaymentResponse {
   payment_id: string;
   provider: string;
   amount_cents: number;
+  tip_cents: number;
   currency: string;
   status: string;
   order_state: string;
@@ -223,6 +284,8 @@ export interface LocationOut {
   org_id: string;
   name: string;
   timezone: string;
+  /** The public-holiday surcharge the till offers (1500 = 15%). */
+  holiday_surcharge_bp?: number | null;
 }
 
 export interface DeviceSession {
@@ -245,12 +308,22 @@ export interface Closeout {
     sent: number;
     paid: number;
     voided: number;
+    refunded: number;
   };
   gross_sales_cents: number;
   paid_sales_cents: number;
   gst_cents: number;
   sales_ex_gst_cents: number;
+  discounts_cents: number;
+  surcharges_cents: number;
   open_balance_cents: number;
+  tips_cents: number;
+  tips_by_provider: Record<string, number>;
+  refunds_cents: number;
+  refunds_by_provider: Record<string, number>;
+  refund_gst_cents: number;
+  net_sales_cents: number;
+  net_gst_cents: number;
   payments_by_provider: Record<string, number>;
   revenue_by_class_cents: Record<string, number>;
 }
