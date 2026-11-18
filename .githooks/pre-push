@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Local pre-push gate, a fast echo of .github/workflows/pr-checks.yml:
+#   Python changes: ruff, mypy, pytest, and alembic check on a scratch SQLite database.
+#   web/ changes:   typecheck and unit tests.
+# (PostgreSQL and the Docker stack only run in CI.)
+# Install per clone:  git config core.hooksPath .githooks
+# Bypass (emergencies only):  git push --no-verify
+set -eu
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+UPSTREAM=""
+if git rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
+  UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}")
+elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+  UPSTREAM="origin/main"
+fi
+CHANGED=""
+if [ -n "$UPSTREAM" ]; then
+  CHANGED=$(git diff --name-only "$UPSTREAM"...HEAD 2>/dev/null || echo "")
+fi
+
+# With nothing to compare against, check everything.
+python_changed=1
+web_changed=1
+if [ -n "$UPSTREAM" ]; then
+  echo "$CHANGED" | grep -qE '\.py$|pyproject\.toml$|constraints\.txt$|^migrations/' || python_changed=0
+  echo "$CHANGED" | grep -qE '^web/' || web_changed=0
+fi
+
+PY="python"
+if [ -x ".venv/Scripts/python.exe" ]; then
+  PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+  PY=".venv/bin/python"
+fi
+
+if [ "$python_changed" = 1 ]; then
+  echo "[pre-push] ruff check"
+  "$PY" -m ruff check .
+  echo "[pre-push] mypy"
+  "$PY" -m mypy src
+  echo "[pre-push] pytest"
+  "$PY" -m pytest -q
+  echo "[pre-push] alembic check"
+  # Inside the git dir: a path both Windows and POSIX Python resolve, unique per worktree.
+  scratch="$(git rev-parse --absolute-git-dir)/precheck-alembic"
+  rm -rf "$scratch" && mkdir -p "$scratch"
+  trap 'rm -rf "$scratch"' EXIT
+  VOIDPOS_DATABASE_URL="sqlite:///$scratch/check.db" "$PY" -m alembic upgrade head >/dev/null
+  VOIDPOS_DATABASE_URL="sqlite:///$scratch/check.db" "$PY" -m alembic check
+else
+  echo "[pre-push] no Python changes; skipping Python checks"
+fi
+
+if [ "$web_changed" = 1 ] && [ -d web/node_modules ]; then
+  echo "[pre-push] web typecheck + tests"
+  (cd web && npm run --silent typecheck && npm test --silent)
+elif [ "$web_changed" = 1 ]; then
+  echo "[pre-push] web changed but web/node_modules is missing; run 'npm ci' in web/ (CI will check)"
+fi
+
+echo "[pre-push] checks passed"

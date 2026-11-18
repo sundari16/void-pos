@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..ids import new_ulid
@@ -14,6 +14,10 @@ class Order(Base, TimestampMixin):
     """Projected order header. Built by folding events — not written to directly in prod."""
 
     __tablename__ = "pos_order"
+    # A till never reuses an order number: it's what the kitchen calls out.
+    __table_args__ = (
+        UniqueConstraint("device_id", "order_number", name="uq_order_device_number"),
+    )
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
     location_id: Mapped[str] = mapped_column(ForeignKey("location.id"), nullable=False, index=True)
@@ -27,7 +31,7 @@ class Order(Base, TimestampMixin):
     fulfillment: Mapped[str] = mapped_column(String(20), nullable=False)  # pickup|delivery|dine_in
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|sent|paid|voided
 
-    lines: Mapped[list["OrderLine"]] = relationship(
+    lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
     )
 
@@ -52,5 +56,9 @@ class OrderLine(Base, TimestampMixin):
     unit_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     tax_rate_snapshot: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False, default=0)
     category_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Dine-in: which seat the item is for and which course it fires with. Set on item
+    # lines only; a modifier follows its item. Unset for counter and takeaway orders.
+    seat_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    course_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    order: Mapped["Order"] = relationship(back_populates="lines")
+    order: Mapped[Order] = relationship(back_populates="lines")

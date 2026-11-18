@@ -3,11 +3,21 @@ from __future__ import annotations
 from datetime import datetime, time
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Time
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Time,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..ids import new_ulid
 from .base import Base, TimestampMixin
+from .event import JsonType
 
 
 class MenuItem(Base, TimestampMixin):
@@ -60,3 +70,25 @@ class MenuItemModifierGroup(Base):
     modifier_group_id: Mapped[str] = mapped_column(
         ForeignKey("modifier_group.id"), primary_key=True
     )
+
+
+class MenuChange(Base, TimestampMixin):
+    """One admin edit to the menu, numbered per location, with the values before and
+    after. A revert is a change too, pointing at the change it undid (once only)."""
+
+    __tablename__ = "menu_change"
+    __table_args__ = (
+        UniqueConstraint("location_id", "number", name="uq_menu_change_location_number"),
+        UniqueConstraint("reverts_id", name="uq_menu_change_reverts"),
+    )
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    location_id: Mapped[str] = mapped_column(ForeignKey("location.id"), nullable=False, index=True)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    entity: Mapped[str] = mapped_column(String(40), nullable=False)  # menu_item|modifier_group|modifier
+    entity_id: Mapped[str] = mapped_column(String(26), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)  # create|update|delete|attach|detach
+    before: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+    after: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+    reverts_id: Mapped[str | None] = mapped_column(ForeignKey("menu_change.id"), nullable=True)
+    actor: Mapped[str] = mapped_column(String(80), nullable=False, default="admin")

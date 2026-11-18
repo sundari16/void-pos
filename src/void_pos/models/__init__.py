@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from .base import Base
-from .catalog import MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
+from .catalog import MenuChange, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
 from .crm import Customer
-from .event import Event
+from .event import Event, SyncCounter
 from .loyalty import LoyaltyLedger
 from .order import Order, OrderLine
 from .org import Device, Location, Org
@@ -13,17 +13,19 @@ from .payment import Payment
 
 __all__ = [
     "Base",
-    "Org",
-    "Location",
-    "Device",
     "Customer",
-    "MenuItem",
-    "ModifierGroup",
-    "Modifier",
-    "MenuItemModifierGroup",
+    "Device",
     "Event",
+    "Location",
+    "LoyaltyLedger",
+    "MenuChange",
+    "MenuItem",
+    "MenuItemModifierGroup",
+    "Modifier",
+    "ModifierGroup",
     "Order",
     "OrderLine",
+    "Org",
     "Payment",
-    "LoyaltyLedger",
+    "SyncCounter",
 ]
