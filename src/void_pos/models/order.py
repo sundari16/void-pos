@@ -67,5 +67,24 @@ class OrderLine(Base, TimestampMixin):
     # When the kitchen got this line (projected from order.sent); unset until then, so a
     # send after adding items prints only what's new.
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Taken off the order (with its modifiers); kept for the record, left out of totals.
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="lines")
+
+
+class OrderAdjustment(Base, TimestampMixin):
+    """A discount or a surcharge on the whole order: a percentage (in basis points, 1000 =
+    10%) or a fixed amount in cents. Discounts apply to the items' subtotal, surcharges to
+    the discounted subtotal; the amount follows the order as items change."""
+
+    __tablename__ = "order_adjustment"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
+    order_id: Mapped[str] = mapped_column(ForeignKey("pos_order.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # discount|surcharge
+    basis: Mapped[str] = mapped_column(String(10), nullable=False)  # percent|amount
+    value: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

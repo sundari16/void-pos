@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..balance import balance_cents
-from ..commands import Command, find_replay, record
+from ..commands import Command, ensure_seq_free, find_replay, record
 from ..errors import Conflict, InvalidRequest
 from ..events import EventType
-from ..events.types import TERMINAL
-from ..models import Device, Order, Payment
+from ..events.types import PAID, TERMINAL
+from ..models import Device, Order, Payment, Refund, Staff
 from ..orders import get_order
-from .provider import ChargeRequest, PaymentError, PaymentProvider
+from .provider import ChargeRequest, PaymentError, PaymentProvider, RefundRequest
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ def pay_order(
     *,
     payment_id: str,
     amount_cents: int | None = None,
+    tip_cents: int = 0,
     currency: str = "AUD",
 ) -> PaymentOutcome:
     """Charge part or all of what is owing on an order through ``provider`` and record an
@@ -77,7 +80,10 @@ def pay_order(
 
     result = provider.charge(
         ChargeRequest(
-            order_id=order_id, amount_cents=amount, currency=currency, idempotency_key=payment_id
+            order_id=order_id,
+            amount_cents=amount + tip_cents,
+            currency=currency,
+            idempotency_key=payment_id,
         )
     )
     if result.status == "failed":
@@ -94,7 +100,8 @@ def pay_order(
                 "id": payment_id,
                 "provider": result.provider,
                 "external_ref": result.external_ref,
-                "amount_cents": result.amount_cents,
+                "amount_cents": result.amount_cents - tip_cents,
+                "tip_cents": tip_cents,
                 "currency": result.currency,
                 "status": result.status,
             },
@@ -104,3 +111,94 @@ def pay_order(
     payment = session.get(Payment, payment_id)
     assert payment is not None, "order.paid projects its payment"
     return PaymentOutcome(payment, order, balance_cents(session, order_id), replayed=False)
+
+
+@dataclass(frozen=True)
+class RefundOutcome:
+    refund: Refund
+    order: Order
+    replayed: bool
+
+
+def refund_payment(
+    session: Session,
+    device: Device,
+    order_id: str,
+    provider: PaymentProvider,
+    command: Command,
+    *,
+    refund_id: str,
+    payment_id: str,
+    amount_cents: int,
+    reason: str,
+    approver: Callable[[], Staff | None],
+) -> RefundOutcome:
+    """Give money back against a captured payment of a paid order, through the payment's
+    own provider (cash from the till, the card terminal, Stripe), with a manager's
+    approval once the venue has a manager: ``order.refunded``. Every check runs before the
+    provider is asked; ``refund_id`` is its idempotency key. When everything taken has
+    been given back the order is ``refunded``."""
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    replay = find_replay(
+        session, command, device=device, event_type=EventType.ORDER_REFUNDED, order_id=order_id
+    )
+    if replay is not None:
+        earlier = session.get(Refund, (replay.payload.get("refund") or {}).get("id", ""))
+        if earlier is None:
+            raise Conflict("this event_id was already used without a refund", code="event_id_reused")
+        return RefundOutcome(earlier, order, replayed=True)
+    if session.get(Refund, refund_id) is not None:
+        raise Conflict("a refund with this id already exists", code="refund_exists")
+    if order.state not in (PAID,):
+        raise Conflict(
+            "only a paid order can be refunded", code="order_not_paid", order_state=order.state
+        )
+    payment = session.get(Payment, payment_id)
+    if payment is None or payment.order_id != order_id or payment.status != "captured":
+        raise InvalidRequest("that isn't a payment on this order", code="unknown_payment")
+    if payment.provider != provider.name:
+        raise InvalidRequest(
+            f"refund a {payment.provider} payment the same way", code="wrong_refund_method"
+        )
+    given = sum(r.amount_cents for r in session.scalars(
+        select(Refund).where(Refund.payment_id == payment_id)
+    ))
+    left = payment.amount_cents + payment.tip_cents - given
+    if amount_cents > left:
+        raise InvalidRequest(
+            f"only {left} cents of that payment is left to refund",
+            code="refund_exceeds_payment",
+            refundable_cents=left,
+        )
+    manager = approver()
+    ensure_seq_free(session, device, command)
+    result = provider.refund(
+        RefundRequest(
+            refund_id=refund_id,
+            payment_external_ref=payment.external_ref,
+            amount_cents=amount_cents,
+            currency=payment.currency,
+        )
+    )
+    record(
+        session,
+        device,
+        command,
+        event_type=EventType.ORDER_REFUNDED,
+        payload={
+            "order_id": order_id,
+            "refund": {
+                "id": refund_id,
+                "payment_id": payment_id,
+                "amount_cents": amount_cents,
+                "reason": reason,
+                "provider": payment.provider,
+                "external_ref": result.external_ref,
+            },
+            **({"approved_by": manager.id, "approved_by_name": manager.name} if manager else {}),
+        },
+        business_date=order.business_date,
+    )
+    refund = session.get(Refund, refund_id)
+    assert refund is not None, "order.refunded projects its refund"
+    return RefundOutcome(refund, order, replayed=False)

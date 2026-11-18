@@ -110,7 +110,7 @@ def test_shift_closeout_totals() -> None:
             0,
         )
         assert report["payments_by_provider"] == {"cash": 4800, "external": 600}
-        assert report["orders"] == {"total": 4, "open": 0, "sent": 0, "paid": 3, "voided": 1}
+        assert report["orders"] == {"total": 4, "open": 0, "sent": 0, "paid": 3, "voided": 1, "refunded": 0}
 
 
 def test_revenue_class_excludes_unpaid_orders() -> None:

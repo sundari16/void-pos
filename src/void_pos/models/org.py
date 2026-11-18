@@ -29,6 +29,8 @@ class Location(Base, TimestampMixin):
     address: Mapped[str | None] = mapped_column(String(300), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     receipt_footer: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # The public-holiday surcharge the till offers, in basis points (1500 = 15%).
+    holiday_surcharge_bp: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Device(Base, TimestampMixin):

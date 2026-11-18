@@ -27,8 +27,10 @@ from ..models import (
     Modifier,
     ModifierGroup,
     Order,
+    OrderAdjustment,
     OrderLine,
     Payment,
+    Refund,
     Staff,
 )
 
@@ -81,6 +83,15 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
     payments_by_order: dict[str, list[Payment]] = defaultdict(list)
     for payment in payments:
         payments_by_order[payment.order_id].append(payment)
+    adjustments_by_order: dict[str, list[OrderAdjustment]] = defaultdict(list)
+    refunds_by_order: dict[str, list[Refund]] = defaultdict(list)
+    if order_ids:
+        for adj in session.scalars(
+            select(OrderAdjustment).where(OrderAdjustment.order_id.in_(order_ids))
+        ):
+            adjustments_by_order[adj.order_id].append(adj)
+        for refund in session.scalars(select(Refund).where(Refund.order_id.in_(order_ids))):
+            refunds_by_order[refund.order_id].append(refund)
 
     return {
         "exported_at": datetime.now(UTC).isoformat(),
@@ -112,6 +123,8 @@ def export_location(session: Session, location_id: str) -> dict[str, Any]:
                 **_order(o),
                 "lines": [_order_line(line) for line in lines_by_order.get(o.id, [])],
                 "payments": [_payment(p) for p in payments_by_order.get(o.id, [])],
+                "adjustments": [_adjustment(a) for a in adjustments_by_order.get(o.id, [])],
+                "refunds": [_refund(r) for r in refunds_by_order.get(o.id, [])],
             }
             for o in orders
         ],
@@ -221,6 +234,7 @@ def _order_line(line: OrderLine) -> dict[str, Any]:
         "seat_number": line.seat_number,
         "course_number": line.course_number,
         "sent_at": as_aware(line.sent_at).isoformat() if line.sent_at else None,
+        "removed_at": as_aware(line.removed_at).isoformat() if line.removed_at else None,
     }
 
 
@@ -230,9 +244,35 @@ def _payment(p: Payment) -> dict[str, Any]:
         "provider": p.provider,
         "external_ref": p.external_ref,
         "amount_cents": p.amount_cents,
+        "tip_cents": p.tip_cents,
         "currency": p.currency,
         "status": p.status,
         "business_date": p.business_date.isoformat(),
+    }
+
+
+def _adjustment(a: OrderAdjustment) -> dict[str, Any]:
+    return {
+        "id": a.id,
+        "kind": a.kind,
+        "basis": a.basis,
+        "value": a.value,
+        "label": a.label,
+        "approved_by": a.approved_by,
+        "removed_at": as_aware(a.removed_at).isoformat() if a.removed_at else None,
+    }
+
+
+def _refund(r: Refund) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "payment_id": r.payment_id,
+        "amount_cents": r.amount_cents,
+        "reason": r.reason,
+        "provider": r.provider,
+        "external_ref": r.external_ref,
+        "approved_by": r.approved_by,
+        "business_date": r.business_date.isoformat(),
     }
 
 

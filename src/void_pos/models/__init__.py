@@ -7,9 +7,9 @@ from .catalog import MenuChange, MenuItem, MenuItemModifierGroup, Modifier, Modi
 from .crm import Customer
 from .event import Event, SyncCounter
 from .loyalty import LoyaltyLedger
-from .order import Order, OrderLine
+from .order import Order, OrderAdjustment, OrderLine
 from .org import Device, Location, Org, Staff
-from .payment import Payment
+from .payment import Payment, Refund
 
 __all__ = [
     "Base",
@@ -24,9 +24,11 @@ __all__ = [
     "Modifier",
     "ModifierGroup",
     "Order",
+    "OrderAdjustment",
     "OrderLine",
     "Org",
     "Payment",
+    "Refund",
     "Staff",
     "SyncCounter",
 ]

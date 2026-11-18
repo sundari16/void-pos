@@ -14,16 +14,20 @@ from ..commands import Command
 from ..config import Settings, get_settings
 from ..devices import get_location
 from ..errors import ServiceUnavailable
+from ..events.payloads import AdjustmentIn
 from ..export import export_csv, export_location
-from ..models import Order
+from ..models import Order, Payment
 from ..orders import (
     UNSETTLED,
     add_lines,
+    adjust_order,
     get_order,
     list_orders,
     order_view,
     order_views,
     place_order,
+    remove_adjustment,
+    remove_lines,
     send_to_kitchen,
     void_order,
 )
@@ -32,6 +36,7 @@ from ..payments import (
     ExternalProvider,
     PaymentProvider,
     pay_order,
+    refund_payment,
 )
 from ..printing import Printer, Rasterizer
 from ..receipts import build_receipt, encode_receipt
@@ -43,6 +48,7 @@ from .deps import get_printer, get_rasterizer, get_receipt_printer, get_session
 from .schemas import (
     Ack,
     AddLinesRequest,
+    AdjustRequest,
     CommandIn,
     KitchenRequest,
     KitchenResponse,
@@ -56,6 +62,8 @@ from .schemas import (
     PushResponse,
     ReceiptOut,
     ReceiptPrinted,
+    RefundRequest,
+    RemoveLinesRequest,
     VoidRequest,
     VoidResponse,
 )
@@ -227,6 +235,7 @@ def pay_route(
         _command(body),
         payment_id=body.payment_id,
         amount_cents=body.amount_cents,
+        tip_cents=body.tip_cents,
         currency=body.currency,
     )
     session.commit()
@@ -236,12 +245,101 @@ def pay_route(
         payment_id=payment.id,
         provider=payment.provider,
         amount_cents=payment.amount_cents,
+        tip_cents=payment.tip_cents,
         currency=payment.currency,
         status=payment.status,
         order_state=outcome.order.state,
         balance_cents=outcome.balance_cents,
         replayed=outcome.replayed,
     )
+
+
+def _refund_provider(session: Session, payment_id: str, external_ref: str | None) -> PaymentProvider:
+    """Refund through the payment's own provider."""
+    payment = session.get(Payment, payment_id)
+    if payment is not None and payment.provider == "external":
+        return ExternalProvider(external_ref=external_ref or "")
+    return CashProvider()
+
+
+@router.post("/orders/{order_id}/remove-lines", response_model=OrderResponse, tags=["orders"])
+def remove_lines_route(
+    order_id: str,
+    body: RemoveLinesRequest,
+    session: SessionDep,
+    device: DeviceDep,
+    printer: PrinterDep,
+    rasterizer: RasterizerDep,
+    pins: PinLimiterDep,
+) -> OrderResponse:
+    """Take items off an open order (a CANCEL ticket prints for any the kitchen has). To
+    change a quantity, take the item off and add it again."""
+    outcome = remove_lines(
+        session,
+        device,
+        order_id,
+        _command(body),
+        line_ids=body.line_ids,
+        reason=body.reason,
+        approver=lambda: approve(session, device, body.manager_pin, pins),
+        printer=printer,
+        rasterizer=rasterizer,
+    )
+    session.commit()
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.post("/orders/{order_id}/adjustments", response_model=OrderResponse, tags=["orders"])
+def adjust_route(
+    order_id: str, body: AdjustRequest, session: SessionDep, device: DeviceDep, pins: PinLimiterDep
+) -> OrderResponse:
+    """A discount or surcharge on the whole order."""
+    adjustment = AdjustmentIn.model_validate(body.model_dump(include=set(AdjustmentIn.model_fields)))
+    outcome = adjust_order(
+        session,
+        device,
+        order_id,
+        _command(body),
+        adjustment,
+        approver=lambda: approve(session, device, body.manager_pin, pins),
+    )
+    session.commit()
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.post(
+    "/orders/{order_id}/adjustments/{adjustment_id}/remove",
+    response_model=OrderResponse,
+    tags=["orders"],
+)
+def remove_adjustment_route(
+    order_id: str, adjustment_id: str, body: CommandIn, session: SessionDep, device: DeviceDep
+) -> OrderResponse:
+    outcome = remove_adjustment(session, device, order_id, _command(body), adjustment_id)
+    session.commit()
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
+
+
+@router.post("/orders/{order_id}/refunds", response_model=OrderResponse, tags=["orders"])
+def refund_route(
+    order_id: str, body: RefundRequest, session: SessionDep, device: DeviceDep, pins: PinLimiterDep
+) -> OrderResponse:
+    """Give money back against a payment of a paid order, through its own provider, with
+    a manager's PIN once the venue has a manager."""
+    outcome = refund_payment(
+        session,
+        device,
+        order_id,
+        _refund_provider(session, body.payment_id, body.external_ref),
+        _command(body),
+        refund_id=body.refund_id,
+        payment_id=body.payment_id,
+        amount_cents=body.amount_cents,
+        reason=body.reason,
+        approver=lambda: approve(session, device, body.manager_pin, pins),
+    )
+    session.commit()
+    return _order_response(session, outcome.order, replayed=outcome.replayed)
 
 
 @router.post("/sync/push", response_model=PushResponse, tags=["sync"])

@@ -35,6 +35,8 @@ def print_order(
     if line_ids is not None:
         wanted = set(line_ids)
         lines = [line for line in lines if line.id in wanted]
+    else:
+        lines = [line for line in lines if line.removed_at is None]
     ticket = build_kitchen_ticket(order, lines, void_reason=void_reason, heading=heading)
     data = encode_ticket(ticket, rasterizer=rasterizer)
     printer.send(data)

@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..balance import active_adjustments, active_lines, captured_cents, order_money
 from ..clock import local_date
 from ..commands import Command, ensure_seq_free, find_replay, record
 from ..devices import get_location
 from ..errors import Conflict, InvalidRequest, NotFound
 from ..events import EventType, OrderPlaced
-from ..events.payloads import MAX_ORDER_LINES, OrderLineIn
-from ..events.types import PAID, VOIDED
+from ..events.payloads import MAX_ORDER_LINES, AdjustmentIn, OrderLineIn
+from ..events.types import OPEN, PAID, SENT, VOIDED
 from ..models import Device, Order, OrderLine, Payment, Staff
 from ..printing import Printer, Rasterizer, print_order
+from ..totals import order_math
 from .rules import check_order_lines
 
 
@@ -246,3 +249,149 @@ def void_order(
         business_date=order.business_date,
     )
     return VoidOutcome(order, printed=printed, replayed=False)
+
+
+Approver = Callable[[], Staff | None]
+
+
+def _approval(staff: Staff | None) -> dict[str, str]:
+    return {"approved_by": staff.id, "approved_by_name": staff.name} if staff else {}
+
+
+def _unsettled(session: Session, device: Device, order_id: str) -> Order:
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    if order.state == VOIDED:
+        raise Conflict("this order is voided", code="order_voided")
+    if order.state not in (OPEN, SENT):
+        raise Conflict(
+            f"this order is {order.state}; start a new one",
+            code="order_closed",
+            order_state=order.state,
+        )
+    return order
+
+
+def remove_lines(
+    session: Session,
+    device: Device,
+    order_id: str,
+    command: Command,
+    *,
+    line_ids: list[str],
+    reason: str,
+    approver: Approver,
+    printer: Printer | None,
+    rasterizer: Rasterizer | None = None,
+) -> OrderOutcome:
+    """Take items (with their modifiers) off an open order: ``order.lines_removed``. An
+    item the kitchen has needs a manager's approval and prints a CANCEL ticket first, so a
+    printer that's down records nothing. To change a quantity, take the item off and add
+    it again. The order can't go below what's already been paid."""
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    if find_replay(
+        session, command, device=device, event_type=EventType.ORDER_LINES_REMOVED, order_id=order_id
+    ):
+        return OrderOutcome(order, replayed=True)
+    order = _unsettled(session, device, order_id)
+    lines = active_lines(session, order_id)
+    by_id = {line.id: line for line in lines}
+    unknown = [i for i in line_ids if i not in by_id or by_id[i].parent_line_id is not None]
+    if unknown:
+        raise InvalidRequest(
+            "those aren't items on this order", code="unknown_line", line_ids=unknown
+        )
+    gone = set(line_ids)
+    left = [x for x in lines if x.id not in gone and x.parent_line_id not in gone]
+    if order_math(left, active_adjustments(session, order_id)).total_cents < captured_cents(
+        session, order_id
+    ):
+        raise Conflict(
+            "that would take the order below what's already been paid", code="below_paid"
+        )
+    sent = [x.id for x in lines if x.sent_at and (x.id in gone or x.parent_line_id in gone)]
+    manager = approver() if sent else None
+    ensure_seq_free(session, device, command)
+    if sent and printer is not None:
+        print_order(session, order_id, printer, rasterizer, line_ids=sent, heading="CANCEL")
+    record(
+        session,
+        device,
+        command,
+        event_type=EventType.ORDER_LINES_REMOVED,
+        payload={"order_id": order_id, "line_ids": line_ids, "reason": reason, **_approval(manager)},
+        business_date=order.business_date,
+    )
+    return OrderOutcome(order, replayed=False)
+
+
+def adjust_order(
+    session: Session,
+    device: Device,
+    order_id: str,
+    command: Command,
+    adjustment: AdjustmentIn,
+    *,
+    approver: Approver,
+) -> OrderOutcome:
+    """Put a discount (needs a manager once the venue has one) or a surcharge on an open
+    order: ``order.adjusted``."""
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    if find_replay(
+        session, command, device=device, event_type=EventType.ORDER_ADJUSTED, order_id=order_id
+    ):
+        return OrderOutcome(order, replayed=True)
+    order = _unsettled(session, device, order_id)
+    current = order_money(session, order_id)
+    too_big = adjustment.basis == "amount" and adjustment.value > current.total_cents
+    if adjustment.kind == "discount" and too_big:
+        raise InvalidRequest(
+            "that discount is more than the order",
+            code="discount_too_big",
+            total_cents=current.total_cents,
+        )
+    after = order_math(
+        active_lines(session, order_id), [*active_adjustments(session, order_id), adjustment]
+    )
+    if after.total_cents < captured_cents(session, order_id):
+        raise Conflict(
+            "that would take the order below what's already been paid", code="below_paid"
+        )
+    manager = approver() if adjustment.kind == "discount" else None
+    record(
+        session,
+        device,
+        command,
+        event_type=EventType.ORDER_ADJUSTED,
+        payload={
+            "order_id": order_id,
+            "adjustment": adjustment.model_dump(mode="json"),
+            **_approval(manager),
+        },
+        business_date=order.business_date,
+    )
+    return OrderOutcome(order, replayed=False)
+
+
+def remove_adjustment(
+    session: Session, device: Device, order_id: str, command: Command, adjustment_id: str
+) -> OrderOutcome:
+    """Take a discount or surcharge back off an open order."""
+    order = get_order(session, order_id, location_id=device.location_id, for_update=True)
+    if find_replay(
+        session,
+        command,
+        device=device,
+        event_type=EventType.ORDER_ADJUSTMENT_REMOVED,
+        order_id=order_id,
+    ):
+        return OrderOutcome(order, replayed=True)
+    order = _unsettled(session, device, order_id)
+    record(
+        session,
+        device,
+        command,
+        event_type=EventType.ORDER_ADJUSTMENT_REMOVED,
+        payload={"order_id": order_id, "adjustment_id": adjustment_id},
+        business_date=order.business_date,
+    )
+    return OrderOutcome(order, replayed=False)

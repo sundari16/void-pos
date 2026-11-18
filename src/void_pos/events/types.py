@@ -6,6 +6,10 @@ class EventType:
 
     ORDER_PLACED = "order.placed"
     ORDER_LINES_ADDED = "order.lines_added"  # more items onto an open order
+    ORDER_LINES_REMOVED = "order.lines_removed"  # items taken off an open order
+    ORDER_ADJUSTED = "order.adjusted"  # a discount or surcharge on the order
+    ORDER_ADJUSTMENT_REMOVED = "order.adjustment_removed"
+    ORDER_REFUNDED = "order.refunded"  # money given back against a payment
     ORDER_SENT = "order.sent"
     ORDER_PAID = "order.paid"
     ORDER_VOIDED = "order.voided"
@@ -17,13 +21,16 @@ OPEN = "open"
 SENT = "sent"
 PAID = "paid"
 VOIDED = "voided"
-TERMINAL = frozenset({PAID, VOIDED})
+REFUNDED = "refunded"  # paid, then every cent given back
+TERMINAL = frozenset({PAID, VOIDED, REFUNDED})
+UNSETTLED = frozenset({OPEN, SENT})
 
 _ALLOWED: dict[str, frozenset[str]] = {
     OPEN: frozenset({SENT, PAID, VOIDED}),
     SENT: frozenset({PAID, VOIDED}),
-    PAID: frozenset(),
+    PAID: frozenset({REFUNDED}),
     VOIDED: frozenset(),
+    REFUNDED: frozenset(),
 }
 
 

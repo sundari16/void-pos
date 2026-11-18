@@ -52,6 +52,9 @@ class Receipt:
     gst_cents: int
     payments: list[ReceiptPayment] = field(default_factory=list)
     balance_cents: int = 0
+    subtotal_cents: int | None = None  # shown when discounts or surcharges apply
+    adjustments: list[ReceiptLine] = field(default_factory=list)  # name and signed amount
+    refunds: list[ReceiptPayment] = field(default_factory=list)
     voided: bool = False
     footer: str | None = None
 
@@ -60,17 +63,26 @@ def _local(at: datetime, timezone: str) -> str:
     return as_aware(at).astimezone(ZoneInfo(timezone)).strftime("%d/%m/%Y %H:%M")
 
 
+def _adjustment_name(kind: str, basis: str, value: int) -> str:
+    what = "Discount" if kind == "discount" else "Surcharge"
+    if basis == "percent":
+        pct = f"{value / 100:.2f}".rstrip("0").rstrip(".")
+        return f"{what} {pct}%"
+    return what
+
+
 def build_receipt(session: Session, view: OrderView) -> Receipt:
     order = view.order
     location = get_location(session, order.location_id)
-    qty = extended_quantities(view.lines)
+    qty = extended_quantities(view.active_lines)
     children: dict[str, list[OrderLine]] = defaultdict(list)
-    for line in view.lines:
+    active = view.active_lines
+    for line in active:
         if line.parent_line_id is not None:
             children[line.parent_line_id].append(line)
     ordered = [
         line
-        for item in view.lines
+        for item in active
         if item.parent_line_id is None
         for line in (item, *children[item.id])
     ]
@@ -83,14 +95,29 @@ def build_receipt(session: Session, view: OrderView) -> Receipt:
         )
         for line in ordered
     ]
-    payments = [
-        ReceiptPayment(
-            label=PROVIDER_LABELS.get(p.provider, p.provider),
-            amount_cents=p.amount_cents,
-            reference=p.external_ref,
+    payments: list[ReceiptPayment] = []
+    for p in view.payments:
+        if p.status != "captured":
+            continue
+        label = PROVIDER_LABELS.get(p.provider, p.provider)
+        payments.append(ReceiptPayment(label, p.amount_cents, p.external_ref))
+        if p.tip_cents:
+            payments.append(ReceiptPayment(f"Tip ({label})", p.tip_cents, None))
+    adjustments = [
+        ReceiptLine(
+            quantity=1,
+            name=a.label or _adjustment_name(a.kind, a.basis, a.value),
+            amount_cents=view.adjustment_cents.get(a.id, 0),
+            is_modifier=False,
         )
-        for p in view.payments
-        if p.status == "captured"
+        for a in view.adjustments
+    ]
+    refunds = [
+        ReceiptPayment(
+            f"Refund ({PROVIDER_LABELS.get(r.provider, r.provider)})", -r.amount_cents,
+            r.external_ref,
+        )
+        for r in view.refunds
     ]
     return Receipt(
         title="TAX INVOICE" if location.abn else "RECEIPT",
@@ -107,6 +134,9 @@ def build_receipt(session: Session, view: OrderView) -> Receipt:
         gst_cents=view.gst_cents,
         payments=payments,
         balance_cents=view.balance_cents,
+        subtotal_cents=view.subtotal_cents if adjustments else None,
+        adjustments=adjustments,
+        refunds=refunds,
         voided=order.state == "voided",
         footer=location.receipt_footer,
     )

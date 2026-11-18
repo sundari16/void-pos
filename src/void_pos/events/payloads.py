@@ -119,9 +119,63 @@ class PaymentIn(_Payload):
     id: Ulid
     provider: str = Field(min_length=1, max_length=40)
     external_ref: str | None = Field(default=None, max_length=200)
-    amount_cents: int = Field(ge=0, le=100 * MAX_LINE_CENTS, strict=True)
+    amount_cents: int = Field(ge=0, le=100 * MAX_LINE_CENTS, strict=True)  # toward the order
+    tip_cents: int = Field(default=0, ge=0, le=MAX_LINE_CENTS, strict=True)  # on top, not sales
     currency: str = Field(default="AUD", pattern=CURRENCY_PATTERN)
     status: Literal["captured", "pending", "failed"] = "captured"
+
+
+class _Approved(_Payload):
+    """Who approved a change that needs a manager (named by id and, as a snapshot, name)."""
+
+    approved_by: Ulid | None = None
+    approved_by_name: str | None = Field(default=None, max_length=120)
+
+
+class OrderLinesRemoved(_Approved):
+    """Items taken off an open order, each with its modifiers."""
+
+    order_id: Ulid
+    line_ids: list[Ulid] = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class AdjustmentIn(_Payload):
+    id: Ulid
+    kind: Literal["discount", "surcharge"]
+    basis: Literal["percent", "amount"]
+    value: int = Field(ge=1, le=MAX_LINE_CENTS, strict=True)  # basis points, or cents
+    label: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def _percent_at_most_whole(self) -> AdjustmentIn:
+        if self.basis == "percent" and self.value > 10_000:
+            raise ValueError("a percentage adjustment is at most 100% (10000 basis points)")
+        return self
+
+
+class OrderAdjusted(_Approved):
+    order_id: Ulid
+    adjustment: AdjustmentIn
+
+
+class OrderAdjustmentRemoved(_Approved):
+    order_id: Ulid
+    adjustment_id: Ulid
+
+
+class RefundIn(_Payload):
+    id: Ulid
+    payment_id: Ulid
+    amount_cents: int = Field(ge=1, le=100 * MAX_LINE_CENTS, strict=True)
+    reason: str = Field(min_length=1, max_length=200)
+    provider: str = Field(min_length=1, max_length=40)
+    external_ref: str | None = Field(default=None, max_length=200)
+
+
+class OrderRefunded(_Approved):
+    order_id: Ulid
+    refund: RefundIn
 
 
 class OrderPaid(_Payload):
@@ -140,6 +194,10 @@ class LoyaltyRecorded(_Payload):
 PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
     EventType.ORDER_PLACED: OrderPlaced,
     EventType.ORDER_LINES_ADDED: OrderLinesAdded,
+    EventType.ORDER_LINES_REMOVED: OrderLinesRemoved,
+    EventType.ORDER_ADJUSTED: OrderAdjusted,
+    EventType.ORDER_ADJUSTMENT_REMOVED: OrderAdjustmentRemoved,
+    EventType.ORDER_REFUNDED: OrderRefunded,
     EventType.ORDER_SENT: OrderSent,
     EventType.ORDER_VOIDED: OrderVoided,
     EventType.ORDER_PAID: OrderPaid,

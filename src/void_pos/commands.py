@@ -23,8 +23,17 @@ from .models import Device, Event
 
 # Refusals that clash with what is already recorded, rather than malformed input.
 _CONFLICTS = frozenset(
-    {"seq_conflict", "order_exists", "order_number_used", "foreign_order", "line_exists",
-     "unknown_order"}
+    {
+        "seq_conflict",
+        "order_exists",
+        "order_number_used",
+        "foreign_order",
+        "line_exists",
+        "unknown_order",
+        "adjustment_exists",
+        "refund_exists",
+        "below_paid",
+    }
 )
 
 

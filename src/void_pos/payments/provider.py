@@ -27,6 +27,19 @@ class ChargeResult:
     status: str  # captured | pending | failed
 
 
+@dataclass(frozen=True)
+class RefundRequest:
+    refund_id: str  # also the provider's idempotency key
+    payment_external_ref: str | None
+    amount_cents: int
+    currency: str = "AUD"
+
+
+@dataclass(frozen=True)
+class RefundResult:
+    external_ref: str | None
+
+
 class PaymentProvider(Protocol):
     """A payment backend. Built-in providers (cash, external) live in the open core;
     the Stripe Connect adapter implements this same protocol in the commercial layer."""
@@ -34,3 +47,5 @@ class PaymentProvider(Protocol):
     name: str
 
     def charge(self, request: ChargeRequest) -> ChargeResult: ...
+
+    def refund(self, request: RefundRequest) -> RefundResult: ...
