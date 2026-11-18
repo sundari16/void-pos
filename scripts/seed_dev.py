@@ -25,12 +25,13 @@ seeded rows and prints a fresh code (each code works once).
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import time, timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from void_pos.devices import issue_pairing_code
+from void_pos.menu.modifier_import import import_modifiers, parse_modifier_csv
 from void_pos.models import Base, Device, Location, MenuItem, Org
 
 DEFAULT_URL = "sqlite:///./void_pos_dev.db"
@@ -56,6 +57,16 @@ MENU: list[tuple[str, int, str, float, str | None]] = [
     ("Sparkling Water", 350, "Drinks", 0.0, None),
     ("Gulab Jamun", 600, "Dessert", 0.0, None),
 ]
+LUNCH_ONLY = ("Thali", 2600, "Mains", time(11), time(15))  # sold 11:00 to 15:00 local
+
+MODIFIERS = """group,min,max,modifier,price,kitchen_name,items
+Spice level,1,1,Mild,0,,Masala Dosa;Butter Chicken;Lamb Biryani
+Spice level,,,Medium,0,,
+Spice level,,,Hot,0,காரம்,
+Extras,0,3,Extra butter,1.00,,Garlic Naan;Masala Dosa;Butter Chicken
+Extras,,,Extra chutney,0.50,,
+Extras,,,Add egg,2.00,,
+"""
 
 
 def seed(session: Session) -> dict[str, str]:
@@ -102,6 +113,19 @@ def seed(session: Session) -> dict[str, str]:
                     kitchen_name=kitchen,
                 )
             )
+        name, cents, category, start, end = LUNCH_ONLY
+        session.add(
+            MenuItem(
+                location_id=location.id,
+                name=name,
+                base_price_cents=cents,
+                category=category,
+                available_from=start,
+                available_to=end,
+            )
+        )
+        session.flush()
+    import_modifiers(session, location.id, parse_modifier_csv(MODIFIERS))
 
     code = issue_pairing_code(session, device, ttl=PAIRING_TTL)
     session.commit()

@@ -55,8 +55,14 @@ If the API isn't on `http://localhost:8000`, set `VOIDPOS_API_URL` in `web/.env.
 
 1. **Pair** — the till redeems a pairing code for its bearer token, location, order-number
    range and where its counters resume.
-2. **Order** (`/`) — tap a menu item to open a customize sheet (quantity + modifiers), add
-   it to the ticket. **Place order** posts to `POST /orders`.
+2. **Order** (`/`) — the till loads `GET /locations/{id}/menu` (items, their modifier
+   groups, daily windows) and refreshes it every few minutes. Items not on sale now stay on
+   the grid, greyed out with the reason ("Unavailable", "11:00–15:00"). Tap an item to pick
+   its quantity and modifiers: a pick-one group swaps its choice, other groups take several
+   (with a count each, up to the group's maximum), and **Add to order** waits until every
+   required group has its choices. A **note for the kitchen** goes on as a free-text line.
+   **Place order** posts to `POST /orders`; if the server refuses because the menu changed
+   (an item switched off, out of its window), the till says why and reloads the menu.
 3. Once placed, **Send to kitchen** and payment act on the order. **Pay cash**, or **Card on
    terminal** for a card taken on the venue's own terminal: the cashier types the terminal's
    receipt or approval number, and it's recorded as an `external` payment. The state badge
@@ -77,14 +83,12 @@ twice. See `src/lib/commands.ts`.
 - `npm run dev` — dev server
 - `npm run build` / `npm run start` — production build and serve
 - `npm run typecheck` — `tsc --noEmit`
-- `npm test` — unit tests (vitest) for ids, till counters, retries, the API client and orders
+- `npm test` — unit tests (vitest) for ids, till counters, retries, the API client, the menu
+  rules and orders
 
 ## Known gaps
 
 - **Offline**: the till needs the server to place orders. A PWA served over plain HTTP from
   a LAN address can't register a service worker, so working offline needs local HTTPS or the
   React Native app (an open decision in the architecture doc).
-- **Modifiers** are client-side presets (spice / extras / prep notes) applied as modifier
-  child lines, because the API exposes no endpoint yet to read which modifier groups apply
-  to an item. The order shape already matches real catalog modifiers.
 - Editing a ticket is disabled once the order is placed (no amend/void UI yet).

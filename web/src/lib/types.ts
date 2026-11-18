@@ -10,6 +10,43 @@ export interface MenuItem {
   base_price_cents: number;
   tax_rate: number;
   is_available: boolean;
+  /** Daily window in local time, "HH:MM:SS"; past midnight when to < from. */
+  available_from: string | null;
+  available_to: string | null;
+}
+
+export interface TillMenuItem extends MenuItem {
+  modifier_group_ids: string[];
+  available_now: boolean;
+}
+
+export interface Modifier {
+  id: string;
+  group_id: string;
+  name: string;
+  kitchen_name: string | null;
+  price_delta_cents: number;
+}
+
+export interface ModifierGroup {
+  id: string;
+  location_id: string;
+  name: string;
+  min_select: number;
+  max_select: number | null;
+  available_from: string | null;
+  available_to: string | null;
+  modifiers: Modifier[];
+  available_now: boolean;
+}
+
+/** GET /locations/{id}/menu: everything the till needs to ring up an order. */
+export interface TillMenu {
+  location_id: string;
+  timezone: string;
+  local_time: string;
+  items: TillMenuItem[];
+  modifier_groups: ModifierGroup[];
 }
 
 /** One order line. A modifier is a child line pointing at its item via parent_line_id. */

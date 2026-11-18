@@ -33,9 +33,12 @@ export function OrderTicket({
                 <ul className="mt-1 space-y-0.5 text-sm text-muted">
                   {item.modifiers.map((mod) => (
                     <li key={mod.ref} className="flex gap-1">
-                      <span>+ {mod.name}</span>
+                      <span>
+                        + {mod.quantity > 1 ? `${mod.quantity}× ` : ""}
+                        {mod.name}
+                      </span>
                       {mod.unitPriceCents !== 0 && (
-                        <span>{formatDelta(mod.unitPriceCents)}</span>
+                        <span>{formatDelta(mod.unitPriceCents * mod.quantity)}</span>
                       )}
                     </li>
                   ))}

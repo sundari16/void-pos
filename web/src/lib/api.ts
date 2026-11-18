@@ -7,12 +7,12 @@ import type {
   CommandIn,
   DeviceSession,
   KitchenResponse,
-  MenuItem,
   OrderResponse,
   PairResponse,
   PayRequest,
   PaymentResponse,
   PlaceOrderRequest,
+  TillMenu,
 } from "./types";
 
 export class ApiError extends Error {
@@ -85,8 +85,8 @@ export function createApi(fetchImpl: Fetch = (input, init) => fetch(input, init)
     me(token: string): Promise<DeviceSession> {
       return request("/devices/me", { token });
     },
-    listMenuItems(token: string, locationId: string): Promise<MenuItem[]> {
-      return request(`/locations/${locationId}/menu/items`, { token });
+    tillMenu(token: string, locationId: string): Promise<TillMenu> {
+      return request(`/locations/${locationId}/menu`, { token });
     },
     placeOrder(token: string, body: PlaceOrderRequest): Promise<OrderResponse> {
       return request("/orders", { method: "POST", token, body });

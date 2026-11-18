@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { friendlyError, runCommand, type Pending } from "@/lib/commands";
+import { groupsFor, localClock, type ChosenModifier } from "@/lib/menu";
 import { formatCents } from "@/lib/money";
 import { providerLabel, terminalRef, type PayMethod } from "@/lib/payments";
 import {
@@ -12,15 +13,15 @@ import {
   toLineIns,
   type DraftItem,
 } from "@/lib/order";
-import type { QuickModifier } from "@/lib/modifiers";
 import type {
   CommandIn,
   KitchenResponse,
-  MenuItem,
   OrderResponse,
   PaymentResponse,
   PayRequest,
   PlaceOrderRequest,
+  TillMenu,
+  TillMenuItem,
 } from "@/lib/types";
 import { ulid } from "@/lib/ulid";
 import { ItemDialog } from "@/components/ItemDialog";
@@ -30,6 +31,15 @@ import { PairTill } from "@/components/PairTill";
 import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
 const FULFILLMENTS = ["dine_in", "pickup", "delivery"] as const;
+const MENU_REFRESH_MS = 5 * 60_000;
+const CLOCK_TICK_MS = 30_000;
+// A refused order that means the till's menu is out of date: reload it.
+const STALE_MENU = new Set([
+  "item_unavailable",
+  "modifier_unavailable",
+  "modifier_not_allowed",
+  "modifier_selection",
+]);
 
 interface Placed {
   order: OrderResponse;
@@ -41,13 +51,13 @@ interface Placed {
 export default function PosPage() {
   const { till, ready, command, orderNumber, orderNumberAfter, seqAfter, unpair } = useTill();
 
-  const [items, setItems] = useState<MenuItem[]>([]);
+  const [menu, setMenu] = useState<TillMenu | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState("00:00:00");
 
   const [draft, setDraft] = useState<DraftItem[]>([]);
   const [fulfillment, setFulfillment] = useState<string>("dine_in");
-  const [dialogItem, setDialogItem] = useState<MenuItem | null>(null);
+  const [dialogItem, setDialogItem] = useState<TillMenuItem | null>(null);
 
   const [placed, setPlaced] = useState<Placed | null>(null);
   const [busy, setBusy] = useState<null | "place" | "kitchen" | "pay">(null);
@@ -63,24 +73,32 @@ export default function PosPage() {
 
   const token = till?.token;
   const locationId = till?.locationId;
-  useEffect(() => {
+  const loadMenu = useCallback(async () => {
     if (!token || !locationId) return;
-    let active = true;
-    setLoading(true);
-    setMenuError(null);
-    api
-      .listMenuItems(token, locationId)
-      .then((list) => active && setItems(list))
-      .catch((err) => {
-        if (!active) return;
-        if (err instanceof ApiError && err.status === 401) unpair(REVOKED_NOTICE);
-        else setMenuError(friendlyError(err));
-      })
-      .finally(() => active && setLoading(false));
-    return () => {
-      active = false;
-    };
+    try {
+      const fresh = await api.tillMenu(token, locationId);
+      setMenu(fresh);
+      setNow(localClock(fresh.timezone));
+      setMenuError(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) unpair(REVOKED_NOTICE);
+      else setMenuError(friendlyError(err));
+    }
   }, [token, locationId, unpair]);
+
+  // Load the menu, then keep it fresh: an item switched off in admin greys out within
+  // minutes, and the clock moves items in and out of their windows.
+  useEffect(() => {
+    void loadMenu();
+    const refresh = setInterval(() => void loadMenu(), MENU_REFRESH_MS);
+    return () => clearInterval(refresh);
+  }, [loadMenu]);
+  const timezone = menu?.timezone;
+  useEffect(() => {
+    if (!timezone) return;
+    const tick = setInterval(() => setNow(localClock(timezone)), CLOCK_TICK_MS);
+    return () => clearInterval(tick);
+  }, [timezone]);
 
   function send<B extends CommandIn, R>(
     pending: Pending<B>,
@@ -105,9 +123,9 @@ export default function PosPage() {
   const total = orderTotalCents(draft);
   const count = orderLineCount(draft);
 
-  function addItem(item: MenuItem, quantity: number, modifiers: QuickModifier[]) {
+  function addItem(item: TillMenuItem, quantity: number, chosen: ChosenModifier[], note: string) {
     if (!editable) return;
-    setDraft((prev) => [...prev, draftItemFrom(item, quantity, modifiers)]);
+    setDraft((prev) => [...prev, draftItemFrom(item, quantity, chosen, note)]);
     setDialogItem(null);
   }
 
@@ -151,6 +169,7 @@ export default function PosPage() {
       setPlaced({ order, state: order.state });
     } catch (err) {
       setActionError(friendlyError(err));
+      if (err instanceof ApiError && STALE_MENU.has(err.code)) void loadMenu();
     } finally {
       setBusy(null);
     }
@@ -227,13 +246,19 @@ export default function PosPage() {
     <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
       {/* Menu */}
       <section>
-        {loading && <p className="text-sm text-muted">Loading menu…</p>}
+        {!menu && !menuError && <p className="text-sm text-muted">Loading menu…</p>}
         {menuError && (
-          <p className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-            Couldn&apos;t load the menu: {menuError}
+          <p className="mb-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+            Couldn&apos;t {menu ? "refresh" : "load"} the menu: {menuError}
           </p>
         )}
-        {!loading && !menuError && <MenuGrid items={items} onPick={(item) => editable && setDialogItem(item)} />}
+        {menu && (
+          <MenuGrid
+            items={menu.items}
+            now={now}
+            onPick={(item) => editable && setDialogItem(item)}
+          />
+        )}
       </section>
 
       {/* Order ticket */}
@@ -419,8 +444,14 @@ export default function PosPage() {
         </div>
       </aside>
 
-      {dialogItem && (
-        <ItemDialog item={dialogItem} onAdd={addItem} onClose={() => setDialogItem(null)} />
+      {dialogItem && menu && (
+        <ItemDialog
+          item={dialogItem}
+          groups={groupsFor(dialogItem, menu)}
+          now={now}
+          onAdd={addItem}
+          onClose={() => setDialogItem(null)}
+        />
       )}
     </div>
   );
