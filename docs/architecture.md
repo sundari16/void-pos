@@ -78,6 +78,10 @@ ticket prints just before its event is written, so a dead printer records nothin
 | `order_exists` | an order with this id already exists |
 | `foreign_order` | the event touches another location's order |
 | `unknown_customer` | a loyalty entry names a customer outside this org |
+| `unknown_order` | items added to an order the server hasn't got yet (send its `order.placed` first, then resend) |
+| `line_exists` | an added line's id is already used |
+| `order_too_long` | the order would pass 1,000 lines |
+| `manager_approval_required` | a void at a location with managers that doesn't name one |
 
 In a sync batch a refused event is acked `rejected` and the rest still apply. A reference
 to a menu item, modifier or customer that doesn't exist at the location (deleted since, or
@@ -161,7 +165,10 @@ unique at the location and stored as a salted scrypt hash. Once a location has a
 manager, voiding an order or switching a dish off from a till needs a manager's PIN in the
 request; the void event or the menu change records who approved it. Wrong PINs are counted
 per till (5 in 5 minutes, then 429). A location with no manager needs no PIN, so add one
-before going live.
+before going live. The rule holds on every path: an `order.voided` event, online or from
+sync, must name an active manager at the location by id and name, or it is rejected
+(`manager_approval_required`). A till can't check a PIN offline yet; the React Native till
+will need signed approvals for offline voids.
 
 - **Venue admin**: `VOIDPOS_ADMIN_TOKEN` (24+ characters, compared in constant time).
   Creates locations and tills, issues pairing codes, revokes tills, edits the menu, exports.
@@ -193,7 +200,7 @@ anything unexpected is a logged 500 `internal_error`.
 | 403 | `till_only`, `admin_only`, `admin_disabled`, `wrong_location`, `foreign_event`, `manager_pin_required`, `wrong_pin` |
 | 404 | `not_found`, `unknown_entity` |
 | 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `order_paid`, `payment_exists`, `range_overlap`, `device_revoked`, `item_unavailable`, `modifier_unavailable`, `changed_since`, `already_reverted`, `in_use`, `group_missing`, `line_exists`, `pin_taken` |
-| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn` |
+| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn`, `order_too_long` |
 | 429 | `too_many_attempts` |
 | 503 | `printer_unavailable`, `no_receipt_printer`, `database_unavailable` |
 

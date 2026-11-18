@@ -104,4 +104,4 @@ def get_pairing_limiter() -> AttemptLimiter:
 @lru_cache
 def get_pin_limiter() -> AttemptLimiter:
     """Wrong manager PINs, counted per till (a till's identity comes from its token)."""
-    return AttemptLimiter(per_client=5, overall=50, window=300, what="PINs")
+    return AttemptLimiter(per_client=5, overall=500, window=300, what="PINs")

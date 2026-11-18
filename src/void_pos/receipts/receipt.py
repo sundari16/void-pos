@@ -100,7 +100,7 @@ def build_receipt(session: Session, view: OrderView) -> Receipt:
         abn=format_abn(location.abn) if location.abn else None,
         order_number=order.order_number,
         table_label=order.table_label,
-        ordered_at=_local(order.created_at, location.timezone),
+        ordered_at=_local(order.placed_at or order.created_at, location.timezone),
         printed_at=_local(utcnow(), location.timezone),
         lines=lines,
         total_cents=view.total_cents,

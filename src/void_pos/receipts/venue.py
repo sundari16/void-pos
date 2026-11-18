@@ -18,7 +18,7 @@ def normalize_abn(text: str) -> str:
     """An Australian Business Number as 11 digits, or InvalidRequest. The check: take 1
     from the first digit, weight the digits, and the sum divides by 89."""
     digits = "".join(ch for ch in text if not ch.isspace())
-    if len(digits) != 11 or not digits.isdigit():
+    if len(digits) != 11 or any(ch not in "0123456789" for ch in digits):
         raise InvalidRequest("an ABN is 11 digits", code="invalid_abn")
     values = [int(d) for d in digits]
     values[0] -= 1

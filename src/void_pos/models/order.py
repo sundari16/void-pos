@@ -31,6 +31,9 @@ class Order(Base, TimestampMixin):
     fulfillment: Mapped[str] = mapped_column(String(20), nullable=False)  # pickup|delivery|dine_in
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|sent|paid|voided
     table_label: Mapped[str | None] = mapped_column(String(40), nullable=True)  # "12", "Patio 3"
+    # When the till rang it up (order.placed's occurred_at): an order synced later still
+    # shows the time it was taken.
+    placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lines: Mapped[list[OrderLine]] = relationship(
         back_populates="order", cascade="all, delete-orphan"

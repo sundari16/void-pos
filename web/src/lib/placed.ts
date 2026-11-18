@@ -41,7 +41,7 @@ export function isUnsettled(order: OrderResponse): boolean {
   return order.state === "open" || order.state === "sent";
 }
 
-/** The kitchen has every line now. */
+/** The kitchen has every line now (a fresh send covers every line not yet sent). */
 export function withKitchen(order: OrderResponse, kitchen: KitchenResponse): OrderResponse {
   return {
     ...order,

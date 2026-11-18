@@ -22,11 +22,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..balance import balance_cents
@@ -43,8 +43,10 @@ from ..models import (
     Order,
     OrderLine,
     Payment,
+    Staff,
 )
-from .payloads import PAYLOAD_SCHEMAS
+from ..staff import managers_required
+from .payloads import MAX_ORDER_LINES, PAYLOAD_SCHEMAS
 from .types import OPEN, PAID, SENT, VOIDED, EventType, can_transition
 
 
@@ -154,10 +156,26 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
         if order is not None and order.location_id != location_id:
             return reject("foreign_order", "the order belongs to another location")
         if event_type == EventType.ORDER_LINES_ADDED:
+            if order is None:
+                return reject(
+                    "unknown_order", "the order isn't here yet; send its order.placed first"
+                )
             ids = [line["id"] for line in payload["lines"]]
             taken = session.scalar(select(OrderLine.id).where(OrderLine.id.in_(ids)).limit(1))
             if taken is not None:
                 return reject("line_exists", f"order line {taken} already exists")
+            count = session.scalar(
+                select(func.count()).select_from(OrderLine).where(OrderLine.order_id == order.id)
+            )
+            if (count or 0) + len(ids) > MAX_ORDER_LINES:
+                return reject(
+                    "order_too_long",
+                    f"an order can have at most {MAX_ORDER_LINES} lines; start another",
+                )
+        if event_type == EventType.ORDER_VOIDED:
+            refusal = _approval_refusal(session, location_id, payload)
+            if refusal is not None:
+                return reject("manager_approval_required", refusal)
     elif event_type == EventType.LOYALTY_RECORDED:
         if _local_customer(session, payload["customer_id"], location_id) is None:
             return reject("unknown_customer", "the customer isn't known at this venue")
@@ -168,7 +186,32 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
     return None
 
 
+def _approval_refusal(
+    session: Session, location_id: str, payload: dict[str, Any]
+) -> str | None:
+    """Once a location has a manager, a void must name an active manager there, by id and
+    name, whichever path it came by. The online path names the manager whose PIN it
+    checked; an event from sync can't name one it doesn't know."""
+    if not managers_required(session, location_id):
+        return None
+    manager = session.get(Staff, payload.get("approved_by") or "")
+    if (
+        manager is None
+        or manager.location_id != location_id
+        or manager.role != "manager"
+        or not manager.active
+        or manager.name != payload.get("approved_by_name")
+    ):
+        return "a void here needs a manager's approval"
+    return None
+
+
 # --- projection handlers ---------------------------------------------------------
+
+
+def _utc(at: datetime) -> datetime:
+    """Stored times are UTC (SQLite keeps the wall time and drops the zone)."""
+    return as_aware(at).astimezone(UTC)
 
 
 def _project(session: Session, event: Event) -> ApplyResult:
@@ -195,6 +238,7 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
             channel=p["channel"],
             fulfillment=p["fulfillment"],
             table_label=p.get("table_label"),
+            placed_at=_utc(event.occurred_at),
             state="open",
         )
     )
@@ -262,7 +306,7 @@ def _h_order_sent(session: Session, event: Event) -> ApplyResult:
         stmt = stmt.where(OrderLine.id.in_(line_ids))
     marked = 0
     for line in session.scalars(stmt):
-        line.sent_at = event.occurred_at
+        line.sent_at = _utc(event.occurred_at)
         marked += 1
     if order.state == OPEN:
         order.state = SENT

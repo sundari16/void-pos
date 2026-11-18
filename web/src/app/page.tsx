@@ -172,7 +172,11 @@ export default function PosPage() {
   // draft is frozen: tapping again must resend exactly what was sent, never a changed one.
   const unconfirmed =
     (order === null && pendingPlace.current !== null) || pendingAdd.current !== null;
-  const canAdd = order !== null && isUnsettled(order) && pendingVoid.current === null;
+  const canAdd =
+    order !== null &&
+    isUnsettled(order) &&
+    pendingVoid.current === null &&
+    pendingKitchen.current === null;
   const editable = !unconfirmed && (order === null || canAdd);
   const draftTotal = orderTotalCents(draft);
   const draftCount = orderLineCount(draft);
@@ -267,7 +271,15 @@ export default function PosPage() {
       const kitchen = await send(pendingKitchen, command, (body) =>
         api.sendToKitchen(till.token, order.id, body),
       );
-      update(order.id, (p) => ({ ...p, order: withKitchen(p.order, kitchen), kitchen }));
+      // A replay doesn't say which lines that earlier send covered: ask the server.
+      const fresh = kitchen.replayed
+        ? await api.getOrder(till.token, order.id).catch(() => null)
+        : null;
+      update(order.id, (p) => ({
+        ...p,
+        order: fresh ?? withKitchen(p.order, kitchen),
+        kitchen,
+      }));
     } catch (err) {
       failed(err);
     } finally {
@@ -393,6 +405,7 @@ export default function PosPage() {
   if (!till) return <PairTill />;
 
   const pickItem = (item: TillMenuItem) => {
+    if (busy !== null || pinAsk !== null) return;
     if (soldOutMode) void toggleSoldOut(item);
     else if (editable) setDialogItem(item);
   };

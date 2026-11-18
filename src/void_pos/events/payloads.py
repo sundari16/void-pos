@@ -18,6 +18,7 @@ from ..totals import total_cents
 from .types import EventType
 
 MAX_LINE_CENTS = 10_000_000  # $100,000 per line: a typo guard, not a business limit
+MAX_ORDER_LINES = 1000  # lines on one order, items and modifiers, however many adds
 
 Channel = Literal["pos", "voice", "qr", "web", "aggregator"]
 Fulfillment = Literal["pickup", "delivery", "dine_in"]
@@ -105,7 +106,7 @@ class OrderSent(OrderRef):
     """The kitchen got these lines. Without ``line_ids`` (older tills): every line it
     hadn't had yet."""
 
-    line_ids: list[Ulid] | None = Field(default=None, max_length=1000)
+    line_ids: list[Ulid] | None = Field(default=None, max_length=MAX_ORDER_LINES)
 
 
 class OrderVoided(OrderRef):

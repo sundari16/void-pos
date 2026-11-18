@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 from ..clock import local_date
 from ..commands import Command, ensure_seq_free, find_replay, record
 from ..devices import get_location
-from ..errors import Conflict, NotFound
+from ..errors import Conflict, InvalidRequest, NotFound
 from ..events import EventType, OrderPlaced
-from ..events.payloads import OrderLineIn
-from ..events.types import PAID, SENT, VOIDED
+from ..events.payloads import MAX_ORDER_LINES, OrderLineIn
+from ..events.types import PAID, VOIDED
 from ..models import Device, Order, OrderLine, Payment, Staff
 from ..printing import Printer, Rasterizer, print_order
 from .rules import check_order_lines
@@ -107,6 +107,14 @@ def add_lines(
     ids = [line.id for line in lines]
     if session.scalar(select(OrderLine.id).where(OrderLine.id.in_(ids)).limit(1)) is not None:
         raise Conflict("one of these line ids is already used", code="line_exists")
+    count = session.scalar(
+        select(func.count()).select_from(OrderLine).where(OrderLine.order_id == order_id)
+    )
+    if (count or 0) + len(ids) > MAX_ORDER_LINES:
+        raise InvalidRequest(
+            f"an order can have at most {MAX_ORDER_LINES} lines; start another",
+            code="order_too_long",
+        )
     check_order_lines(session, get_location(session, device.location_id), lines)
     record(
         session,
@@ -189,8 +197,9 @@ def void_order(
     approved_by: Staff | None = None,
 ) -> VoidOutcome:
     """Record ``order.voided``. An order with payments is refused (refund first), and so
-    is one already voided. If the kitchen has the order, a VOID ticket prints first, so
-    a printer that can't be reached leaves nothing recorded and the till can retry."""
+    is one already voided. If the kitchen has any of the order, a VOID ticket listing what
+    it has prints first, so a printer that can't be reached leaves nothing recorded and
+    the till can retry."""
     order = get_order(session, order_id, location_id=device.location_id, for_update=True)
     if find_replay(
         session, command, device=device, event_type=EventType.ORDER_VOIDED, order_id=order_id
@@ -210,8 +219,15 @@ def void_order(
 
     ensure_seq_free(session, device, command)
     printed = False
-    if order.state == SENT and printer is not None:
-        print_order(session, order_id, printer, rasterizer, void_reason=reason)
+    sent = list(
+        session.scalars(
+            select(OrderLine.id).where(
+                OrderLine.order_id == order_id, OrderLine.sent_at.is_not(None)
+            )
+        )
+    )
+    if sent and printer is not None:
+        print_order(session, order_id, printer, rasterizer, void_reason=reason, line_ids=sent)
         printed = True
     record(
         session,

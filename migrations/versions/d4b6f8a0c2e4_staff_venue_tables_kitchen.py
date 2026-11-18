@@ -7,6 +7,7 @@ Create Date: 2026-11-18 20:00:00.000000
 """
 from __future__ import annotations
 
+import json
 from typing import Sequence, Union
 
 from alembic import op
@@ -41,20 +42,49 @@ def upgrade() -> None:
         batch.add_column(sa.Column("receipt_footer", sa.String(length=300), nullable=True))
     with op.batch_alter_table("pos_order") as batch:
         batch.add_column(sa.Column("table_label", sa.String(length=40), nullable=True))
+        batch.add_column(sa.Column("placed_at", sa.DateTime(timezone=True), nullable=True))
     with op.batch_alter_table("order_line") as batch:
         batch.add_column(sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True))
-    # Lines of orders the kitchen already has were sent when the order was.
-    op.execute(
-        "UPDATE order_line SET sent_at = (SELECT pos_order.updated_at FROM pos_order "
-        "WHERE pos_order.id = order_line.order_id) WHERE order_id IN "
-        "(SELECT id FROM pos_order WHERE state IN ('sent', 'paid', 'voided'))"
+    _backfill_from_the_log()
+
+
+def _backfill_from_the_log() -> None:
+    """When each order was rung up, and which orders the kitchen already has: from the
+    order.placed and order.sent events (an order paid at the counter but never sent
+    stays unsent)."""
+    bind = op.get_bind()
+    placed: dict[str, object] = {}
+    first_sent: dict[str, object] = {}
+    rows = bind.execute(
+        sa.text(
+            "SELECT type, occurred_at, payload FROM event "
+            "WHERE type IN ('order.placed', 'order.sent') ORDER BY occurred_at"
+        )
     )
+    for kind, occurred_at, payload in rows:
+        data = json.loads(payload) if isinstance(payload, str) else payload
+        order_id = (data or {}).get("order_id")
+        if not order_id:
+            continue
+        target = placed if kind == "order.placed" else first_sent
+        target.setdefault(order_id, occurred_at)
+    for order_id, at in placed.items():
+        bind.execute(
+            sa.text("UPDATE pos_order SET placed_at = :at WHERE id = :id"),
+            {"at": at, "id": order_id},
+        )
+    for order_id, at in first_sent.items():
+        bind.execute(
+            sa.text("UPDATE order_line SET sent_at = :at WHERE order_id = :id"),
+            {"at": at, "id": order_id},
+        )
 
 
 def downgrade() -> None:
     with op.batch_alter_table("order_line") as batch:
         batch.drop_column("sent_at")
     with op.batch_alter_table("pos_order") as batch:
+        batch.drop_column("placed_at")
         batch.drop_column("table_label")
     with op.batch_alter_table("location") as batch:
         batch.drop_column("receipt_footer")
