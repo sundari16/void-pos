@@ -4,7 +4,7 @@ Sets up a location and a till with the admin token, pairs the till, then places 
 sends it to the kitchen, pays, replays the payment and reads the closeout. Standard
 library only, so it runs anywhere Python does:
 
-    python scripts/smoke_test.py --api http://localhost:8000 --admin-token "$VOIDPOS_ADMIN_TOKEN"
+    python scripts/smoke_test.py --api http://localhost:8000 --admin-token="$VOIDPOS_ADMIN_TOKEN"
 
 Exits 0 when every step passes, 1 on the first failure.
 """
