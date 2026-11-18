@@ -123,7 +123,7 @@ Customer receipts show the venue's details. With an ABN they are tax invoices:
 
 ```bash
 docker compose exec api void-pos venue-details --location <location id> \
-  --business-name "Madras Curry House" --abn "12 345 678 901" \
+  --business-name "Madras Curry House" --abn "<your 11-digit ABN>" \
   --address "1 Example St, Brisbane QLD 4000" --phone "07 0000 0000" --footer "Nandri!"
 ```
 
