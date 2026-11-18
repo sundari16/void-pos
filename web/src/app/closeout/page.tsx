@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { friendlyError } from "@/lib/commands";
 import { formatCents } from "@/lib/money";
+import { providerLabel } from "@/lib/payments";
 import type { Closeout } from "@/lib/types";
 import { PairTill } from "@/components/PairTill";
 import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
@@ -113,7 +114,11 @@ export default function CloseoutPage() {
 
           <section className="rounded-2xl border border-border bg-surface p-4">
             <h2 className="mb-3 text-sm font-semibold">Payments by provider</h2>
-            <Breakdown rows={report.payments_by_provider} emptyLabel="No captured payments." />
+            <Breakdown
+              rows={report.payments_by_provider}
+              label={providerLabel}
+              emptyLabel="No captured payments."
+            />
           </section>
 
           <section className="rounded-2xl border border-border bg-surface p-4">
@@ -132,7 +137,16 @@ export default function CloseoutPage() {
   );
 }
 
-function Breakdown({ rows, emptyLabel }: { rows: Record<string, number>; emptyLabel: string }) {
+function Breakdown({
+  rows,
+  emptyLabel,
+  label,
+}: {
+  rows: Record<string, number>;
+  emptyLabel: string;
+  /** Names rows for people; without it the raw name is shown capitalised. */
+  label?: (name: string) => string;
+}) {
   const entries = Object.entries(rows);
   if (entries.length === 0) {
     return <p className="text-sm text-muted">{emptyLabel}</p>;
@@ -141,7 +155,7 @@ function Breakdown({ rows, emptyLabel }: { rows: Record<string, number>; emptyLa
     <ul className="divide-y divide-border">
       {entries.map(([name, cents]) => (
         <li key={name} className="flex items-center justify-between py-2">
-          <span className="capitalize">{name}</span>
+          <span className={label ? undefined : "capitalize"}>{label ? label(name) : name}</span>
           <span className="tabular-nums">{formatCents(cents)}</span>
         </li>
       ))}

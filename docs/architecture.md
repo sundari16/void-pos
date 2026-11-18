@@ -35,7 +35,7 @@ a socket straight to the kitchen printer.
 | `src/void_pos/models/` | SQLAlchemy models: the event log plus projected aggregates |
 | `src/void_pos/events/` | `ingest_event` / `apply_events`: validate, append, project; payload schemas per event type |
 | `src/void_pos/commands.py` | The online write path: one till command becomes one event, replay-safe |
-| `src/void_pos/orders/`, `payments/` | Place order, send to kitchen, pay (provider seam: cash, external; Stripe Connect is commercial) |
+| `src/void_pos/orders/`, `payments/` | Place order, send to kitchen, pay. Hybrid (decided 18 Nov 2026): cash and card-on-terminal (`external` + the terminal's reference) now; Stripe Connect as the commercial default; one terminal integration later if venues need it |
 | `src/void_pos/sync/` | Device push and cursor pull, scoped to a location |
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
 | `src/void_pos/menu/` | Catalog; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |

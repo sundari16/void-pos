@@ -130,7 +130,9 @@ Run through this the day before the first service (the Madras Curry House pilot 
 5. **Tills:** `add-device` once per tablet, each with its own order-number range; pair each
    tablet at `http://<venue machine>:3000`.
 6. **Dry run of a service:** on each till, place an order, send it to the kitchen, take a cash
-   payment, then check the closeout shows it. Void nothing yet (voids from the till aren't
+   payment, then another paid by **Card on terminal** (take the card on the venue's own
+   terminal as usual and type its receipt or approval number into the till), and check the
+   closeout shows cash and card separately. Void nothing yet (voids from the till aren't
    built), so use small test items and note them for reconciliation.
 7. **Backups:** a dump appears in `./backups`; copy it off the machine and set a habit (or a
    synced folder) for copying the nightly ones.

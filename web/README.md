@@ -57,7 +57,9 @@ If the API isn't on `http://localhost:8000`, set `VOIDPOS_API_URL` in `web/.env.
    range and where its counters resume.
 2. **Order** (`/`) — tap a menu item to open a customize sheet (quantity + modifiers), add
    it to the ticket. **Place order** posts to `POST /orders`.
-3. Once placed, **Send to kitchen** and **Pay cash** act on the order; the state badge
+3. Once placed, **Send to kitchen** and payment act on the order. **Pay cash**, or **Card on
+   terminal** for a card taken on the venue's own terminal: the cashier types the terminal's
+   receipt or approval number, and it's recorded as an `external` payment. The state badge
    follows `open → sent → paid`. **New order** starts the next ticket.
 4. **Closeout** (`/closeout`) — `GET /reports/{location_id}/closeout` for a business date in
    the location's timezone: gross sales, order counts, payments by provider, revenue by class.

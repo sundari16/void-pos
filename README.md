@@ -13,7 +13,8 @@ The **open core**: the order pipeline, catalog, local-first sync, kitchen printi
 basic dine-in/online, and full data export. Commercial modules (hosted ops, Stripe
 Connect platform, voice AI, aggregators, marketing) live elsewhere.
 
-License: **AGPL-3.0-or-later** (see `LICENSE`).
+License: **AGPL-3.0-or-later** (see `LICENSE`). Contributions need agreement to the
+[Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Architecture in one line
 
