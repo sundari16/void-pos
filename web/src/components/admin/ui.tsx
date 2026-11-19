@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 // Small building blocks shared by the back-office screens, in the till's own style.
 
@@ -170,6 +170,12 @@ export function Dialog({
   children: ReactNode;
   wide?: boolean;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/40 p-4" onClick={onClose}>
       <div

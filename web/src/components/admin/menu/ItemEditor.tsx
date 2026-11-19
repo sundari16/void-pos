@@ -52,7 +52,7 @@ export function ItemEditor({
   // A rate other than 10% or 0% (set by an import, say) stays selectable.
   const rates = TAX_RATES.some((r) => Number(r.value) === Number(form.tax_rate))
     ? TAX_RATES
-    : [...TAX_RATES, { value: form.tax_rate, label: `${Number(form.tax_rate) * 100}%` }];
+    : [...TAX_RATES, { value: form.tax_rate, label: `${Math.round(Number(form.tax_rate) * 1000) / 10}%` }];
 
   async function submit(event: FormEvent) {
     event.preventDefault();
