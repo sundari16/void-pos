@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     stripe_publishable_key: str | None = None
     # Square: an access token, only to read the item library for the menu import.
     square_access_token: SecretStr | None = None
+    # Delivery-aggregator webhook: a shared secret the incoming request carries in the
+    # X-Void-Aggregator-Secret header. Unset = the webhook is off (503). The real partner
+    # adapters verify each platform's signed webhooks instead; this is the open-core seam.
+    aggregator_webhook_secret: SecretStr | None = None
 
     @field_validator(
         "admin_token",
@@ -44,6 +48,7 @@ class Settings(BaseSettings):
         "stripe_secret_key",
         "stripe_publishable_key",
         "square_access_token",
+        "aggregator_webhook_secret",
         mode="before",
     )
     @classmethod
@@ -76,6 +81,10 @@ class Settings(BaseSettings):
     @property
     def stripe_enabled(self) -> bool:
         return self.stripe_secret_key is not None and self.stripe_publishable_key is not None
+
+    @property
+    def aggregator_enabled(self) -> bool:
+        return self.aggregator_webhook_secret is not None
 
     @property
     def cors_origin_list(self) -> list[str]:

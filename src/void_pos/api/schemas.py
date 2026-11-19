@@ -732,3 +732,26 @@ class DeviceSession(BaseModel):
 
 class PairResponse(DeviceSession):
     token: str  # shown once; the till keeps it, the server only stores its hash
+
+
+# --- delivery aggregators ---------------------------------------------------------
+
+
+class AggregatorOrderOut(BaseModel):
+    """What the aggregator webhook reports back about one partner order."""
+
+    provider: str
+    external_order_id: str
+    display_id: str | None
+    status: str  # accepted | rejected
+    order_id: str | None  # null for a rejected order (none entered the sales pipeline)
+    order_number: int | None
+    order_state: str | None
+    replayed: bool  # the partner order had already been handled (idempotent)
+
+
+class AggregatorMenuSyncOut(BaseModel):
+    provider: str
+    status: str  # published | queued | skipped
+    item_count: int
+    external_ref: str | None

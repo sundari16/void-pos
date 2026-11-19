@@ -140,11 +140,17 @@ class DownPrinter:
 
 @contextmanager
 def api(
-    engine: Engine, *, printer: Any = None, admin_token: str | None = ADMIN_TOKEN
+    engine: Engine,
+    *,
+    printer: Any = None,
+    admin_token: str | None = ADMIN_TOKEN,
+    aggregator_secret: str | None = None,
 ) -> Iterator[TestClient]:
     """A client for the real app wired to ``engine``, a fake printer and test settings."""
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
-    test_settings = Settings(_env_file=None, admin_token=admin_token)  # type: ignore[call-arg]
+    test_settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, admin_token=admin_token, aggregator_webhook_secret=aggregator_secret
+    )
 
     def _session() -> Iterator[Session]:
         with sessions() as s:

@@ -214,6 +214,52 @@ docker compose start api web
 
 Taking a backup right now: `docker compose restart backup`.
 
+## Delivery aggregators
+
+Void POS can take orders from delivery platforms (Uber Eats, DoorDash, Menulog) straight
+onto the same order flow — they ring up on the `aggregator` channel, print to the kitchen
+and show in the closeout like any other order. The order is recorded **paid** with provider
+`aggregator` (the platform already charged the customer), carrying the platform's own
+reference so it reconciles against the platform's payout.
+
+The open core ships a **mock** provider so you can see the whole flow end to end. The real
+Uber Eats / DoorDash / Menulog connectors each need that platform's partner approval and
+signed API access, and are a separate commercial module — not in this repo.
+
+**Try it from the command line** (the mock provider, no partner needed):
+
+```bash
+# an order file: see the shape below
+docker compose exec api void-pos aggregator-order --location <id> --file /tmp/order.json
+# publish the venue's menu to the platform (the mock just reports what it would send)
+docker compose exec api void-pos aggregator-sync-menu --location <id>
+```
+
+A mock order file is a small JSON document:
+
+```json
+{
+  "id": "UE-10021",
+  "display_id": "A7QK",
+  "fulfillment": "delivery",
+  "payment_ref": "ue_charge_88f2",
+  "items": [
+    {"name": "Masala Dosa", "quantity": 2, "unit_price_cents": 1850, "category": "Mains",
+     "tax_rate": 0.1, "modifiers": [{"name": "Extra hot", "unit_price_cents": 0}]}
+  ]
+}
+```
+
+Ingesting is **idempotent on the platform's order id** (`id`): the same order twice is the
+same order, never two. `--reject --reason "..."` declines an order instead (the platform
+refunds the customer); nothing enters the sales pipeline.
+
+**The webhook.** To let a platform (or your own adapter) post orders in, set a shared secret
+`VOIDPOS_AGGREGATOR_WEBHOOK_SECRET` (unset = the webhook is off) and point it at
+`POST /aggregators/mock/locations/<id>/orders` with the secret in the
+`X-Void-Aggregator-Secret` header. `.../orders/reject` declines one;
+`.../menu` (admin token) publishes the menu.
+
 ## Export
 
 The owner can take everything out at any time, as JSON or CSV, with the admin token:
