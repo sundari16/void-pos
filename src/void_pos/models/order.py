@@ -31,6 +31,10 @@ class Order(Base, TimestampMixin):
     fulfillment: Mapped[str] = mapped_column(String(20), nullable=False)  # pickup|delivery|dine_in
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open|sent|paid|voided
     table_label: Mapped[str | None] = mapped_column(String(40), nullable=True)  # "12", "Patio 3"
+    # Where a delivery order goes, and a free-text note the customer left (online orders).
+    # Unset for counter/dine-in orders.
+    delivery_address: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    customer_note: Mapped[str | None] = mapped_column(String(400), nullable=True)
     # When the till rang it up (order.placed's occurred_at): an order synced later still
     # shows the time it was taken.
     placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

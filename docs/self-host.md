@@ -138,6 +138,35 @@ A thermal receipt printer at the counter is optional. Set `VOIDPOS_RECEIPT_PRINT
 (and `VOIDPOS_RECEIPT_PRINTER_COLUMNS=32` for 58 mm paper) in `.env`; without one, the
 till's **Receipt** button shows the receipt to print from the tablet.
 
+## Online ordering, loyalty and marketing
+
+The web app serves a customer storefront at `/order/<location id>` (share that link, or set
+`NEXT_PUBLIC_DEFAULT_LOCATION` so bare `/order` opens your venue). Customers browse the live
+menu, order for pickup or delivery, and pay by card or at pickup. A web order goes onto the
+`web` channel in the **same pipeline** as the tills — it appears in Open orders and prints
+in the kitchen like any other. It is on by default (`VOIDPOS_ONLINE_ORDERING_ENABLED=false`
+turns it off). Online card payments reuse the Stripe keys above.
+
+**Loyalty** is off until you turn it on. When enabled, a customer earns whole points per
+whole dollar spent and can redeem them at checkout; the balance is always the sum of the
+ledger, never a stored number, so it exports cleanly. Set in `.env`:
+
+```bash
+VOIDPOS_LOYALTY_ENABLED=true
+VOIDPOS_LOYALTY_EARN_POINTS_PER_DOLLAR=1    # 1 point per $1
+VOIDPOS_LOYALTY_REDEEM_CENTS_PER_POINT=1    # each point is worth 1c off (1% back)
+```
+
+**Marketing**: send an SMS or email to your opted-in customers (only customers who ticked
+the consent box on the storefront are ever contacted). Out of the box the sender just logs
+what it would send; point a channel at your own Twilio/SendGrid account to send for real
+(see `.env.example`). `{name}` in the message is filled per customer.
+
+```bash
+docker compose exec api void-pos send-campaign --location <location id> --channel sms \
+  --body "Hi {name}, 10% off all weekend!" --dry-run   # drop --dry-run to send
+```
+
 ## Kitchen printer
 
 Network ESC/POS printers listen on port 9100. Set its address in `.env` and restart:

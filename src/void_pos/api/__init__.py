@@ -7,6 +7,7 @@ from .board_routes import router as board_router
 from .device_routes import router as device_router
 from .errors import install_error_handlers
 from .menu_routes import router as menu_router
+from .online_routes import router as online_router
 from .routes import router
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "device_router",
     "install_error_handlers",
     "menu_router",
+    "online_router",
     "router",
 ]

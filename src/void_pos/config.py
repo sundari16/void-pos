@@ -36,6 +36,26 @@ class Settings(BaseSettings):
     # Square: an access token, only to read the item library for the menu import.
     square_access_token: SecretStr | None = None
 
+    # --- online ordering, CRM, loyalty, marketing (open-core activation) -------------
+    # The customer-facing storefront (the public /online/* API). Off = those routes 404.
+    online_ordering_enabled: bool = True
+
+    # Loyalty earn/redeem on the existing ledger. Off until enabled (points neither earned
+    # nor redeemable); the storefront hides points entirely when off.
+    loyalty_enabled: bool = False
+    loyalty_earn_points_per_dollar: int = Field(default=1, ge=0, le=1000)  # points per whole AUD
+    loyalty_redeem_cents_per_point: int = Field(default=1, ge=1, le=100)  # a point's value in cents
+
+    # Campaign senders: "log" (no-op, the open-core default), "twilio" (SMS) or
+    # "sendgrid" (email). The real adapters are config-driven and use the venue's account.
+    marketing_sms_sender: str = "log"
+    marketing_email_sender: str = "log"
+    twilio_account_sid: str | None = None
+    twilio_auth_token: SecretStr | None = None
+    twilio_from_number: str | None = None
+    sendgrid_api_key: SecretStr | None = None
+    sendgrid_from_email: str | None = None
+
     @field_validator(
         "admin_token",
         "kitchen_printer_host",
@@ -44,6 +64,11 @@ class Settings(BaseSettings):
         "stripe_secret_key",
         "stripe_publishable_key",
         "square_access_token",
+        "twilio_account_sid",
+        "twilio_auth_token",
+        "twilio_from_number",
+        "sendgrid_api_key",
+        "sendgrid_from_email",
         mode="before",
     )
     @classmethod

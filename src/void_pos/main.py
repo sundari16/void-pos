@@ -13,6 +13,7 @@ from .api import (
     device_router,
     install_error_handlers,
     menu_router,
+    online_router,
     router,
 )
 from .api.deps import get_session
@@ -35,6 +36,7 @@ app.include_router(router)
 app.include_router(menu_router)
 app.include_router(admin_router)
 app.include_router(board_router)
+app.include_router(online_router)
 
 
 @app.get("/health", tags=["health"])

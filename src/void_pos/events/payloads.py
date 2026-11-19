@@ -77,6 +77,9 @@ class OrderPlaced(_Payload):
     fulfillment: Fulfillment
     customer_id: Ulid | None = None
     table_label: str | None = Field(default=None, min_length=1, max_length=40)  # "12", "Patio 3"
+    # Online orders: where a delivery goes, and a note the customer left.
+    delivery_address: str | None = Field(default=None, min_length=1, max_length=400)
+    customer_note: str | None = Field(default=None, min_length=1, max_length=400)
     lines: list[OrderLineIn] = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
