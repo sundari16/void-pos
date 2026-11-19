@@ -5,6 +5,7 @@
     void-pos pairing-code --device <id>
     void-pos import-menu --location <id> --file menu.csv [--dry-run]
     void-pos import-modifiers --location <id> --file modifiers.csv [--dry-run]
+    void-pos import-square --location <id> [--dry-run]   (VOIDPOS_SQUARE_ACCESS_TOKEN)
     void-pos add-staff --location <id> --name "Asha" --role manager   (asks for the PIN)
     void-pos venue-details --location <id> --abn "51 824 753 556" --address "..."
     void-pos print-test
@@ -42,6 +43,7 @@ from .devices import (
 from .errors import VoidPosError
 from .menu.importer import import_menu, parse_menu_csv
 from .menu.modifier_import import import_modifiers, parse_modifier_csv
+from .menu.square import SquareCatalog, translate
 from .models import Device
 from .printing import (
     KitchenTicket,
@@ -99,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--location", required=True)
     imp.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
     imp.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+
+    square = sub.add_parser(
+        "import-square", help="bring the menu over from Square (items, prices, GST, modifiers)"
+    )
+    square.add_argument("--location", required=True)
+    square.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
 
     venue = sub.add_parser("venue-details", help="set what customer receipts show")
     venue.add_argument("--location", required=True)
@@ -228,6 +236,31 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
     if args.command == "deactivate-staff":
         person = deactivate_staff(session, args.staff)
         return f"Deactivated {person.name}; their PIN no longer works"
+    if args.command == "import-square":
+        get_location(session, args.location)
+        if settings.square_access_token is None:
+            raise VoidPosError(
+                "set VOIDPOS_SQUARE_ACCESS_TOKEN in .env first", code="square_not_set_up"
+            )
+        catalog = SquareCatalog(settings.square_access_token.get_secret_value())
+        menu = translate(list(catalog.objects()))
+        if not menu.items:
+            raise VoidPosError("Square returned no priced items", code="square_empty")
+        # Groups attach to items by name, so the items go in first; a dry run rolls the
+        # whole import back at the end.
+        items = import_menu(session, args.location, menu.items)
+        loaded = import_modifiers(session, args.location, menu.groups)
+        verb = "Would" if args.dry_run else "Did"
+        lines = [
+            (f"{verb} create {len(items.created)} items, update {len(items.updated)}, "
+            f"leave {len(items.unchanged)} unchanged."),
+            (f"{verb} create {len(loaded.created)} modifier groups and options, update "
+            f"{len(loaded.updated)}, attach {len(loaded.attached)}."),
+        ]
+        lines += [f"  + {name}" for name in items.created + loaded.created]
+        lines += [f"  ~ {name}" for name in items.updated + loaded.updated]
+        lines += [f"  ! {note}" for note in menu.notes]
+        return "\n".join(lines)
     if args.command == "import-modifiers":
         get_location(session, args.location)
         groups = parse_modifier_csv(_read_text(args.file))
