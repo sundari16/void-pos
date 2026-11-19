@@ -18,37 +18,49 @@ export function AppHeader() {
           <span>Void POS</span>
         </Link>
 
-        {till && (
-          <div className="flex items-center gap-1 text-sm">
-            <nav className="flex items-center gap-1">
-              <Link
-                href="/"
-                className="rounded-md px-3 py-1.5 font-medium text-muted hover:bg-background hover:text-foreground"
-              >
-                Order
-              </Link>
-              <Link
-                href="/closeout"
-                className="rounded-md px-3 py-1.5 font-medium text-muted hover:bg-background hover:text-foreground"
-              >
-                Closeout
-              </Link>
-            </nav>
-            <span className="ml-2 hidden text-muted sm:inline">
-              {till.deviceName} · {till.locationName}
-            </span>
-            <button
-              onClick={() => {
-                if (confirming) unpair();
-                setConfirming(!confirming);
-              }}
-              onBlur={() => setConfirming(false)}
-              className="ml-1 rounded-md px-2 py-1.5 text-xs font-medium text-muted hover:bg-background hover:text-foreground"
+        <div className="flex items-center gap-1 text-sm">
+          <nav className="flex items-center gap-1">
+            {till && (
+              <>
+                <Link
+                  href="/"
+                  className="rounded-md px-3 py-1.5 font-medium text-muted hover:bg-background hover:text-foreground"
+                >
+                  Order
+                </Link>
+                <Link
+                  href="/closeout"
+                  className="rounded-md px-3 py-1.5 font-medium text-muted hover:bg-background hover:text-foreground"
+                >
+                  Closeout
+                </Link>
+              </>
+            )}
+            <Link
+              href="/admin"
+              className="rounded-md px-3 py-1.5 font-medium text-muted hover:bg-background hover:text-foreground"
             >
-              {confirming ? "Tap again to unpair" : "Unpair"}
-            </button>
-          </div>
-        )}
+              Back office
+            </Link>
+          </nav>
+          {till && (
+            <>
+              <span className="ml-2 hidden text-muted sm:inline">
+                {till.deviceName} · {till.locationName}
+              </span>
+              <button
+                onClick={() => {
+                  if (confirming) unpair();
+                  setConfirming(!confirming);
+                }}
+                onBlur={() => setConfirming(false)}
+                className="ml-1 rounded-md px-2 py-1.5 text-xs font-medium text-muted hover:bg-background hover:text-foreground"
+              >
+                {confirming ? "Tap again to unpair" : "Unpair"}
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </header>
   );
