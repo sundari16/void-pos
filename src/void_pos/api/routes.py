@@ -14,7 +14,7 @@ from ..clock import local_date
 from ..commands import Command
 from ..config import Settings, get_settings
 from ..devices import get_location
-from ..errors import Conflict, InvalidRequest, ServiceUnavailable
+from ..errors import Conflict, InvalidRequest, ServiceUnavailable, VoidPosError
 from ..events.payloads import AdjustmentIn
 from ..export import export_csv, export_location
 from ..models import Order, Payment
@@ -39,7 +39,7 @@ from ..payments import (
     pay_order,
     refund_payment,
 )
-from ..payments.stripe import StripeApi, StripeProvider
+from ..payments.stripe import RELEASE_ON, StripeApi, StripeProvider, release
 from ..printing import Printer, Rasterizer
 from ..receipts import build_receipt, encode_receipt
 from ..reporting import shift_closeout
@@ -81,7 +81,7 @@ RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
 ReceiptPrinterDep = Annotated[Printer | None, Depends(get_receipt_printer)]
 StripeDep = Annotated[StripeApi | None, Depends(get_stripe)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
-OrderState = Literal["open", "sent", "paid", "voided"]
+OrderState = Literal["open", "sent", "paid", "voided", "refunded"]
 
 
 def _command(body: CommandIn) -> Command:
@@ -238,17 +238,22 @@ def pay_route(
         provider = ExternalProvider(external_ref=body.external_ref or "")
     else:
         provider = CashProvider()
-    outcome = pay_order(
-        session,
-        device,
-        order_id,
-        provider,
-        _command(body),
-        payment_id=body.payment_id,
-        amount_cents=body.amount_cents,
-        tip_cents=body.tip_cents,
-        currency=body.currency,
-    )
+    try:
+        outcome = pay_order(
+            session,
+            device,
+            order_id,
+            provider,
+            _command(body),
+            payment_id=body.payment_id,
+            amount_cents=body.amount_cents,
+            tip_cents=body.tip_cents,
+            currency=body.currency,
+        )
+    except VoidPosError as exc:
+        if isinstance(provider, StripeProvider) and exc.code in RELEASE_ON:
+            release(provider.api, provider.intent_id)
+        raise
     session.commit()
     payment = outcome.payment
     return PaymentResponse(

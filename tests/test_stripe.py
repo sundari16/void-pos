@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from support import Venue, api, auth, cmd, make_engine, order_body, seed_venue
 from void_pos.api.deps import get_stripe
 from void_pos.config import Settings
-from void_pos.errors import PaymentFailed
+from void_pos.errors import PaymentFailed, ServiceUnavailable
 from void_pos.ids import new_ulid
 from void_pos.main import app
 from void_pos.payments.stripe import StripeHttp
@@ -20,12 +20,14 @@ from void_pos.staff import create_staff
 
 
 class FakeStripe:
-    """Stripe's sandbox, in memory: intents succeed once 'confirmed' by the test."""
+    """Stripe's sandbox, in memory. A test 'confirms' an intent on the till by setting it
+    to requires_capture (authorised); capturing it is the server's job."""
 
     def __init__(self) -> None:
         self.intents: dict[str, dict[str, Any]] = {}
         self.refunds: list[dict[str, Any]] = []
-        self.keys: set[str] = set()
+        self.captures: list[str] = []
+        self.cancelled: list[str] = []
 
     def create_intent(self, *, amount_cents: int, currency: str, idempotency_key: str,
                       metadata: dict[str, str]) -> dict[str, Any]:
@@ -41,6 +43,18 @@ class FakeStripe:
         return self.intents[intent_id]
 
     def get_intent(self, intent_id: str) -> dict[str, Any]:
+        return self.intents[intent_id]
+
+    def capture(self, intent_id: str, *, idempotency_key: str) -> dict[str, Any]:
+        intent = self.intents[intent_id]
+        if intent["status"] == "requires_capture":
+            self.captures.append(idempotency_key)
+            intent["status"] = "succeeded"
+        return intent
+
+    def cancel(self, intent_id: str) -> dict[str, Any]:
+        self.cancelled.append(intent_id)
+        self.intents[intent_id]["status"] = "canceled"
         return self.intents[intent_id]
 
     def refund(self, *, intent_id: str, amount_cents: int, idempotency_key: str) -> dict[str, Any]:
@@ -79,7 +93,7 @@ def _pay(c: TestClient, venue: Venue, order_id: str, seq: int, payment_id: str, 
     }, headers=auth(venue.token))
 
 
-def test_a_card_payment_is_recorded_only_once_stripe_says_it_went_through(ctx: Ctx) -> None:
+def test_a_card_is_captured_only_when_the_payment_is_recorded(ctx: Ctx) -> None:
     c, venue, _, stripe = ctx
     order_id, payment_id = _order(c, venue), new_ulid()
     intent = _intent(c, venue, order_id, payment_id, amount_cents=3700, tip_cents=300)
@@ -92,11 +106,13 @@ def test_a_card_payment_is_recorded_only_once_stripe_says_it_went_through(ctx: C
     assert (early.status_code, early.json()["code"]) == (402, "payment_failed")
     assert "hasn't gone through" in early.json()["detail"]
 
-    stripe.intents[pi]["status"] = "succeeded"
+    stripe.intents[pi]["status"] = "requires_capture"  # the customer's card is authorised
     wrong = _pay(c, venue, order_id, 2, new_ulid(), pi, amount_cents=3700, tip_cents=300)
     assert wrong.status_code == 402  # someone else's intent
+    assert stripe.captures == []
     paid = _pay(c, venue, order_id, 2, payment_id, pi, amount_cents=3700, tip_cents=300)
     assert paid.status_code == 200, paid.text
+    assert stripe.captures == [f"capture-{payment_id}"]
     assert (paid.json()["provider"], paid.json()["order_state"], paid.json()["tip_cents"]) == (
         "stripe", "paid", 300,
     )
@@ -119,7 +135,7 @@ def test_a_card_payment_is_refunded_through_stripe(ctx: Ctx) -> None:
     c, venue, s, stripe = ctx
     order_id, payment_id = _order(c, venue), new_ulid()
     pi = _intent(c, venue, order_id, payment_id, amount_cents=3700).json()["payment_intent_id"]
-    stripe.intents[pi]["status"] = "succeeded"
+    stripe.intents[pi]["status"] = "requires_capture"
     _pay(c, venue, order_id, 2, payment_id, pi, amount_cents=3700)
     create_staff(s, location_id=venue.location_id, name="Asha", role="manager", pin="4821")
     s.commit()
@@ -166,5 +182,55 @@ def test_the_http_client_sends_the_key_and_reports_stripes_errors() -> None:
     assert seen[0].headers["Idempotency-Key"] == "k1"
     assert seen[0].headers["Authorization"].startswith("Basic ")
     assert b"amount=500" in seen[0].content and b"currency=aud" in seen[0].content
+    assert b"capture_method=manual" in seen[0].content
     with pytest.raises(PaymentFailed, match="Charge already refunded"):
         http.refund(intent_id="pi_9", amount_cents=100, idempotency_key="r1")
+
+
+def test_a_hiccup_keeps_the_payment_for_a_safe_retry(ctx: Ctx) -> None:
+    c, venue, _, stripe = ctx
+    order_id, payment_id = _order(c, venue), new_ulid()
+    pi = _intent(c, venue, order_id, payment_id, amount_cents=3700).json()["payment_intent_id"]
+    body = {**cmd(2), "payment_id": payment_id, "method": "stripe",
+            "stripe_payment_intent_id": pi, "amount_cents": 3700}
+
+    def send() -> Any:  # the till resends exactly the same request
+        return c.post(f"/orders/{order_id}/pay", json=body, headers=auth(venue.token))
+
+    stripe.intents[pi]["status"] = "processing"
+    busy = send()
+    assert (busy.status_code, busy.json()["code"]) == (503, "stripe_processing")
+    stripe.intents[pi]["status"] = "requires_capture"
+    again = send()
+    assert again.status_code == 200, again.text
+    replay = send()
+    assert replay.json()["replayed"] is True
+    assert stripe.captures == [f"capture-{payment_id}"]  # captured once
+
+
+def test_an_order_that_cant_take_the_payment_releases_the_card(ctx: Ctx) -> None:
+    c, venue, _, stripe = ctx
+    order_id, card = _order(c, venue), new_ulid()
+    pi = _intent(c, venue, order_id, card, amount_cents=3700).json()["payment_intent_id"]
+    stripe.intents[pi]["status"] = "requires_capture"
+    # Meanwhile another till takes the money in cash.
+    c.post(f"/orders/{order_id}/pay", json={**cmd(2), "payment_id": new_ulid()},
+           headers=auth(venue.token))
+    late = _pay(c, venue, order_id, 3, card, pi, amount_cents=3700)
+    assert (late.status_code, late.json()["code"]) == (409, "order_closed")
+    assert stripe.cancelled == [pi] and stripe.captures == []
+
+
+def test_stripe_outages_are_retryable_not_failures() -> None:
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route")
+
+    http = StripeHttp("sk_test_abc", httpx.Client(base_url="https://api.stripe.com/v1",
+                                                  transport=httpx.MockTransport(down)))
+    with pytest.raises(ServiceUnavailable):
+        http.refund(intent_id="pi_1", amount_cents=100, idempotency_key="r1")
+    flaky = StripeHttp("sk_test_abc", httpx.Client(
+        base_url="https://api.stripe.com/v1",
+        transport=httpx.MockTransport(lambda r: httpx.Response(502, text="bad gateway"))))
+    with pytest.raises(ServiceUnavailable):
+        flaky.get_intent("pi_1")

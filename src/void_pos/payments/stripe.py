@@ -1,23 +1,28 @@
 """Card payments through Stripe (sandbox), taken on the till's screen.
 
-The till asks for a PaymentIntent for what it's charging (``create_intent``), the
-customer's card goes straight from the browser to Stripe through Stripe's Payment Element,
-and then the till records the payment with the intent's id. Recording checks with Stripe
-that the intent succeeded, for this order and payment and this exact amount, so a till
-can't record money that didn't move. The secret key stays on the server; it is never
-logged or returned.
+The till asks for a PaymentIntent for what it's charging (``create_intent``, manual
+capture), and the customer's card goes straight from the browser to Stripe through
+Stripe's Payment Element, which only *authorises* it. Then the till records the payment:
+the server checks the order can take it, checks with Stripe that the intent is for this
+order, payment and exact amount, and only then *captures* it (idempotently) and records
+it. So money moves only when it's recorded: an order that can't take the payment releases
+the hold instead, and a retry after a dropped connection or a Stripe outage captures the
+same intent once. The secret key stays on the server; it is never logged or returned.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
 
+from ..errors import ServiceUnavailable
 from .provider import ChargeRequest, ChargeResult, PaymentError, RefundRequest, RefundResult
 
 API = "https://api.stripe.com/v1"
+log = logging.getLogger(__name__)
 
 
 class StripeApi(Protocol):
@@ -26,6 +31,10 @@ class StripeApi(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_intent(self, intent_id: str) -> dict[str, Any]: ...
+
+    def capture(self, intent_id: str, *, idempotency_key: str) -> dict[str, Any]: ...
+
+    def cancel(self, intent_id: str) -> dict[str, Any]: ...
 
     def refund(self, *, intent_id: str, amount_cents: int, idempotency_key: str) -> dict[str, Any]: ...
 
@@ -43,7 +52,13 @@ class StripeHttp:
         try:
             response = self._client.request(method, path, data=data, auth=self._auth, headers=headers)
         except httpx.HTTPError as exc:
-            raise PaymentError("can't reach Stripe; check the internet and try again") from exc
+            # Nothing is known to have happened: a 503 keeps the till's request (and its
+            # idempotency keys) for a safe retry.
+            raise ServiceUnavailable(
+                "can't reach Stripe; check the internet and try again", code="stripe_unavailable"
+            ) from exc
+        if response.status_code >= 500:
+            raise ServiceUnavailable("Stripe is having trouble; try again", code="stripe_unavailable")
         body: dict[str, Any] = response.json()
         if response.status_code >= 400:
             message = (body.get("error") or {}).get("message") or "Stripe refused the request"
@@ -56,6 +71,7 @@ class StripeHttp:
         data = {
             "amount": str(amount_cents),
             "currency": currency.lower(),
+            "capture_method": "manual",  # authorise on the till, capture when recorded
             "automatic_payment_methods[enabled]": "true",
             "automatic_payment_methods[allow_redirects]": "never",
             **{f"metadata[{k}]": v for k, v in metadata.items()},
@@ -64,6 +80,12 @@ class StripeHttp:
 
     def get_intent(self, intent_id: str) -> dict[str, Any]:
         return self._call("GET", f"/payment_intents/{intent_id}")
+
+    def capture(self, intent_id: str, *, idempotency_key: str) -> dict[str, Any]:
+        return self._call("POST", f"/payment_intents/{intent_id}/capture", {}, idempotency_key)
+
+    def cancel(self, intent_id: str) -> dict[str, Any]:
+        return self._call("POST", f"/payment_intents/{intent_id}/cancel", {})
 
     def refund(self, *, intent_id: str, amount_cents: int, idempotency_key: str) -> dict[str, Any]:
         data = {"payment_intent": intent_id, "amount": str(amount_cents)}
@@ -88,8 +110,16 @@ class StripeProvider:
             raise PaymentError("that card payment belongs to a different order")
         if intent.get("amount") != request.amount_cents:
             raise PaymentError("the card payment's amount doesn't match")
-        if intent.get("status") != "succeeded":
-            raise PaymentError(f"the card payment hasn't gone through ({intent.get('status')})")
+        status = intent.get("status")
+        if status == "requires_capture":
+            intent = self.api.capture(self.intent_id, idempotency_key=f"capture-{self.payment_id}")
+            status = intent.get("status")
+        if status == "processing":
+            raise ServiceUnavailable(
+                "the card payment is still processing; try again", code="stripe_processing"
+            )
+        if status != "succeeded":
+            raise PaymentError(f"the card payment hasn't gone through ({status})")
         return ChargeResult(
             provider=self.name,
             external_ref=str(intent["id"]),
@@ -109,3 +139,17 @@ class StripeProvider:
         if refund.get("status") not in ("succeeded", "pending"):
             raise PaymentError(f"Stripe didn't refund it ({refund.get('status')})")
         return RefundResult(external_ref=str(refund["id"]))
+
+
+# A refusal of the payment itself (not a hiccup): the card's hold is released.
+RELEASE_ON = frozenset(
+    {"order_closed", "order_voided", "amount_exceeds_balance", "invalid_amount", "not_found"}
+)
+
+
+def release(api: StripeApi, intent_id: str) -> None:
+    """Best effort: cancel an authorised intent the till won't record."""
+    try:
+        api.cancel(intent_id)
+    except Exception:  # noqa: BLE001 - the hold lapses on its own if this fails
+        log.warning("couldn't release Stripe intent %s; its hold will lapse", intent_id)

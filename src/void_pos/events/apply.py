@@ -253,9 +253,13 @@ def _change_problem(
         refund = payload["refund"]
         if session.get(Refund, refund["id"]) is not None:
             return "refund_exists", "a refund with this id already exists"
+        if order.state != PAID:
+            return "order_not_paid", "only a paid order can be refunded"
         payment = session.get(Payment, refund["payment_id"])
         if payment is None or payment.order_id != order.id or payment.status != "captured":
             return "unknown_payment", "that payment isn't a captured payment on this order"
+        if refund["provider"] != payment.provider:
+            return "wrong_refund_method", f"refund a {payment.provider} payment the same way"
         given = session.scalar(
             select(func.coalesce(func.sum(Refund.amount_cents), 0)).where(
                 Refund.payment_id == payment.id
@@ -376,7 +380,7 @@ def _h_order_lines_added(session: Session, event: Event) -> ApplyResult:
     order = session.get(Order, event.payload["order_id"])
     if order is None:
         return ApplyResult(event.event_id, "ignored", "order not found")
-    if order.state in (PAID, VOIDED):
+    if order.state not in UNSETTLED:
         return ApplyResult(event.event_id, "conflict", f"can't add to a {order.state} order")
     _add_lines(session, event, order.id, event.payload["lines"])
     return ApplyResult(event.event_id, "applied")
@@ -403,7 +407,11 @@ def _h_order_sent(session: Session, event: Event) -> ApplyResult:
         return ApplyResult(event.event_id, "ignored", "order not found")
     if order.state == VOIDED:
         return ApplyResult(event.event_id, "conflict", "voided -> sent not allowed")
-    stmt = select(OrderLine).where(OrderLine.order_id == order.id, OrderLine.sent_at.is_(None))
+    stmt = select(OrderLine).where(
+        OrderLine.order_id == order.id,
+        OrderLine.sent_at.is_(None),
+        OrderLine.removed_at.is_(None),
+    )
     line_ids = event.payload.get("line_ids")
     if line_ids is not None:
         stmt = stmt.where(OrderLine.id.in_(line_ids))
@@ -469,6 +477,16 @@ def _unsettled_order(session: Session, event: Event) -> Order | ApplyResult:
     return order
 
 
+def _settled(session: Session, event: Event, order: Order) -> ApplyResult:
+    """After taking items off or changing adjustments: if what's been paid now covers the
+    order, it's paid (a $0 order with nothing paid stays open, to add to or void)."""
+    session.flush()
+    if captured_cents(session, order.id) > 0 and balance_cents(session, order.id) == 0:
+        order.state = PAID
+        return ApplyResult(event.event_id, "applied", "now paid in full")
+    return ApplyResult(event.event_id, "applied")
+
+
 def _h_order_lines_removed(session: Session, event: Event) -> ApplyResult:
     order = _unsettled_order(session, event)
     if isinstance(order, ApplyResult):
@@ -482,7 +500,7 @@ def _h_order_lines_removed(session: Session, event: Event) -> ApplyResult:
         )
     ):
         line.removed_at = _utc(event.occurred_at)
-    return ApplyResult(event.event_id, "applied")
+    return _settled(session, event, order)
 
 
 def _h_order_adjusted(session: Session, event: Event) -> ApplyResult:
@@ -501,7 +519,7 @@ def _h_order_adjusted(session: Session, event: Event) -> ApplyResult:
             approved_by=event.payload.get("approved_by"),
         )
     )
-    return ApplyResult(event.event_id, "applied")
+    return _settled(session, event, order)
 
 
 def _h_order_adjustment_removed(session: Session, event: Event) -> ApplyResult:
@@ -512,7 +530,7 @@ def _h_order_adjustment_removed(session: Session, event: Event) -> ApplyResult:
     if adj is None or adj.removed_at is not None:
         return ApplyResult(event.event_id, "duplicate", "adjustment already removed")
     adj.removed_at = _utc(event.occurred_at)
-    return ApplyResult(event.event_id, "applied")
+    return _settled(session, event, order)
 
 
 def _h_order_refunded(session: Session, event: Event) -> ApplyResult:

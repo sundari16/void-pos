@@ -16,7 +16,7 @@ from ..devices import get_location
 from ..errors import Conflict, InvalidRequest, NotFound
 from ..events import EventType, OrderPlaced
 from ..events.payloads import MAX_ORDER_LINES, AdjustmentIn, OrderLineIn
-from ..events.types import OPEN, PAID, SENT, VOIDED
+from ..events.types import OPEN, PAID, REFUNDED, SENT, VOIDED
 from ..models import Device, Order, OrderLine, Payment, Staff
 from ..printing import Printer, Rasterizer, print_order
 from ..totals import order_math
@@ -103,9 +103,11 @@ def add_lines(
         return OrderOutcome(order, replayed=True)
     if order.state == VOIDED:
         raise Conflict("this order is voided", code="order_voided")
-    if order.state == PAID:
+    if order.state in (PAID, REFUNDED):
         raise Conflict(
-            "this order is paid; start a new one", code="order_closed", order_state=order.state
+            f"this order is {order.state}; start a new one",
+            code="order_closed",
+            order_state=order.state,
         )
     ids = [line.id for line in lines]
     if session.scalar(select(OrderLine.id).where(OrderLine.id.in_(ids)).limit(1)) is not None:
@@ -158,7 +160,7 @@ def send_to_kitchen(
         raise Conflict("this order is voided", code="order_voided")
 
     ensure_seq_free(session, device, command)
-    lines = session.scalars(select(OrderLine).where(OrderLine.order_id == order_id)).all()
+    lines = active_lines(session, order_id)  # items taken off never go to the kitchen
     unsent = [line.id for line in lines if line.sent_at is None]
     if not unsent:
         heading, only = "REPRINT", None
@@ -225,7 +227,9 @@ def void_order(
     sent = list(
         session.scalars(
             select(OrderLine.id).where(
-                OrderLine.order_id == order_id, OrderLine.sent_at.is_not(None)
+                OrderLine.order_id == order_id,
+                OrderLine.sent_at.is_not(None),
+                OrderLine.removed_at.is_(None),  # those already had a CANCEL ticket
             )
         )
     )

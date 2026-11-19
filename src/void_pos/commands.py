@@ -33,6 +33,7 @@ _CONFLICTS = frozenset(
         "adjustment_exists",
         "refund_exists",
         "below_paid",
+        "order_not_paid",
     }
 )
 

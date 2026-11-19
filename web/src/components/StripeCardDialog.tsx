@@ -7,7 +7,8 @@ import { loadStripe, type StripeElements, type StripeJs } from "@/lib/stripe";
 import type { StripeIntentOut } from "@/lib/types";
 
 /** Take a card through Stripe on the till's screen. The customer types the card into
- *  Stripe's own form; when Stripe says it went through, the till records the payment. */
+ *  Stripe's own form, which authorises it; the till then records the payment, and the
+ *  server captures the money only as it records it. */
 export function StripeCardDialog({
   amountCents,
   tipCents,
@@ -72,7 +73,11 @@ export function StripeCardDialog({
       const result = await s.stripe.confirmPayment({ elements: s.elements, redirect: "if_required" });
       if (result.error) {
         setError(result.error.message ?? "The card was declined.");
-      } else if (result.paymentIntent?.status === "succeeded") {
+      } else if (
+        result.paymentIntent &&
+        ["requires_capture", "succeeded"].includes(result.paymentIntent.status)
+      ) {
+        // Authorised: the till records it, and the server captures it then.
         onPaid(result.paymentIntent.id);
       } else {
         setError(`The payment is ${result.paymentIntent?.status ?? "not complete"}.`);

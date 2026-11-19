@@ -213,7 +213,9 @@ def test_refunds_go_back_through_the_payments_own_way(ctx: Ctx) -> None:
     report = c.get(f"/reports/{venue.location_id}/closeout", headers=auth(ADMIN_TOKEN)).json()
     assert report["refunds_by_provider"] == {"cash": 2000, "external": 2000}
     assert report["orders"]["refunded"] == 1
-    assert report["net_sales_cents"] == 3700 - 4000
+    # 4000 given back: the 3700 of sales and the 300 tip.
+    assert (report["refund_sales_cents"], report["refund_tips_cents"]) == (3700, 300)
+    assert (report["net_sales_cents"], report["net_tips_cents"], report["net_gst_cents"]) == (0, 0, 0)
     receipt = c.get(f"/orders/{order['id']}/receipt", headers=auth(venue.token)).json()
     assert [r["amount_cents"] for r in receipt["refunds"]] == [-500, -1500, -2000]
 

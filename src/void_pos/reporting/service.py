@@ -119,27 +119,49 @@ def tips_and_refunds(session: Session, location_id: str, business_date: date) ->
     by_provider: dict[str, int] = {}
     for refund in refunds:
         by_provider[refund.provider] = by_provider.get(refund.provider, 0) + refund.amount_cents
-    orders = {r.order_id for r in refunds}
+    today = {r.id for r in refunds}
+
+    # A refund gives back the payment's sale part first, then its tip: walk every refund of
+    # each payment in order, and keep the parts of today's.
+    payment_ids = {r.payment_id for r in refunds}
+    payments = {p.id: p for p in session.scalars(select(Payment).where(Payment.id.in_(payment_ids)))}
+    sale_left = {p.id: p.amount_cents for p in payments.values()}
+    tip_left = {p.id: p.tip_cents for p in payments.values()}
+    sale_back: dict[str, int] = {}  # order id -> sale refunded today
+    tips_back = 0
+    for refund in session.scalars(
+        select(Refund).where(Refund.payment_id.in_(payment_ids)).order_by(Refund.id)
+    ):
+        sale = min(refund.amount_cents, sale_left[refund.payment_id])
+        tip = min(refund.amount_cents - sale, tip_left[refund.payment_id])
+        sale_left[refund.payment_id] -= sale
+        tip_left[refund.payment_id] -= tip
+        if refund.id in today:
+            sale_back[refund.order_id] = sale_back.get(refund.order_id, 0) + sale
+            tips_back += tip
+
     views = {
         v.order.id: v
         for v in order_views(
-            session, list(session.scalars(select(Order).where(Order.id.in_(orders))))
+            session, list(session.scalars(select(Order).where(Order.id.in_(sale_back))))
         )
     }
     refund_gst = 0
-    for refund in refunds:
-        view = views[refund.order_id]
+    for order_id, sale in sale_back.items():
+        view = views[order_id]
         if view.total_cents > 0:
-            refund_gst += int(
-                (Decimal(min(refund.amount_cents, view.total_cents)) * view.gst_cents
-                 / view.total_cents).quantize(Decimal(1), ROUND_HALF_UP)
-            )
+            share = Decimal(min(sale, view.total_cents)) * view.gst_cents / view.total_cents
+            refund_gst += int(share.quantize(Decimal(1), ROUND_HALF_UP))
+    tips_total = sum(int(t or 0) for _, t in tips)
     return {
-        "tips_cents": sum(int(t or 0) for _, t in tips),
+        "tips_cents": tips_total,
         "tips_by_provider": {provider: int(t or 0) for provider, t in tips},
         "refunds_cents": sum(by_provider.values()),
         "refunds_by_provider": by_provider,
+        "refund_sales_cents": sum(sale_back.values()),
+        "refund_tips_cents": tips_back,
         "refund_gst_cents": refund_gst,
+        "net_tips_cents": tips_total - tips_back,
     }
 
 
@@ -159,7 +181,7 @@ def shift_closeout(session: Session, location_id: str, business_date: date) -> d
         "gross_sales_cents": sum(by_provider.values()),
         **sales,
         **money_back,
-        "net_sales_cents": sales["paid_sales_cents"] - money_back["refunds_cents"],
+        "net_sales_cents": sales["paid_sales_cents"] - money_back["refund_sales_cents"],
         "net_gst_cents": sales["gst_cents"] - money_back["refund_gst_cents"],
         "payments_by_provider": by_provider,
         "revenue_by_class_cents": revenue_class_sales(session, location_id, business_date),
