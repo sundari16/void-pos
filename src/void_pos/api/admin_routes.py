@@ -18,11 +18,14 @@ from ..devices import (
     register_device,
     revoke_device,
 )
+from ..marketing import make_sender, send_campaign
 from ..receipts import update_venue
 from ..staff import create_staff, deactivate_staff, list_staff, set_pin
 from .auth import AdminDep
 from .deps import get_session
 from .schemas import (
+    CampaignIn,
+    CampaignResultOut,
     DeviceCreated,
     DeviceIn,
     DeviceOut,
@@ -30,6 +33,7 @@ from .schemas import (
     LocationOut,
     PairingCodeOut,
     PinIn,
+    SendResultOut,
     StaffIn,
     StaffOut,
     VenueDetailsIn,
@@ -143,3 +147,43 @@ def deactivate(staff_id: str, session: SessionDep, _: AdminDep) -> StaffOut:
     person = deactivate_staff(session, staff_id)
     session.commit()
     return StaffOut.model_validate(person)
+
+
+@router.post("/locations/{location_id}/campaigns", response_model=CampaignResultOut)
+def send_campaign_route(
+    location_id: str,
+    body: CampaignIn,
+    session: SessionDep,
+    settings: SettingsDep,
+    _: AdminDep,
+) -> CampaignResultOut:
+    """Send an SMS or email campaign to the location's opted-in customers. Uses the no-op
+    log sender unless the venue configured a real Twilio/SendGrid adapter."""
+    sender = make_sender(settings, body.channel)
+    result = send_campaign(
+        session,
+        location_id=location_id,
+        channel=body.channel,
+        body=body.body,
+        subject=body.subject,
+        sender=sender,
+        limit=body.limit,
+        dry_run=body.dry_run,
+    )
+    return CampaignResultOut(
+        channel=result.channel,
+        total=result.total,
+        sent=result.sent,
+        failed=result.failed,
+        skipped=result.skipped,
+        results=[
+            SendResultOut(
+                to=r.to,
+                status=r.status,
+                detail=r.detail,
+                external_ref=r.external_ref,
+                customer_id=r.customer_id,
+            )
+            for r in result.results
+        ],
+    )

@@ -41,6 +41,7 @@ from .devices import (
     revoke_device,
 )
 from .errors import VoidPosError
+from .marketing import make_sender, send_campaign
 from .menu.importer import import_menu, parse_menu_csv
 from .menu.modifier_import import import_modifiers, parse_modifier_csv
 from .menu.square import SquareCatalog, translate
@@ -135,6 +136,17 @@ def build_parser() -> argparse.ArgumentParser:
     mods.add_argument("--location", required=True)
     mods.add_argument("--file", required=True, help="a UTF-8 CSV file, or - for standard input")
     mods.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+
+    camp = sub.add_parser(
+        "send-campaign", help="send an SMS/email campaign to opted-in customers"
+    )
+    camp.add_argument("--location", required=True)
+    camp.add_argument("--channel", choices=("sms", "email"), required=True)
+    camp.add_argument("--body", help="the message; {name} is filled per customer")
+    camp.add_argument("--file", help="read the body from a file (or - for standard input)")
+    camp.add_argument("--subject", help="email subject line")
+    camp.add_argument("--limit", type=int, help="cap the number of recipients")
+    camp.add_argument("--dry-run", action="store_true", help="show the audience, send nothing")
 
     pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
     pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
@@ -275,6 +287,29 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         lines += [f"  ~ {name}" for name in mod_result.updated]
         lines += [f"  = {link}" for link in mod_result.attached]
         return "\n".join(lines)
+    if args.command == "send-campaign":
+        get_location(session, args.location)
+        if args.body and args.file:
+            raise VoidPosError("give --body or --file, not both", code="invalid_args")
+        body = _read_text(args.file) if args.file else args.body
+        if not body or not body.strip():
+            raise VoidPosError("the campaign needs a message (--body or --file)", code="empty_body")
+        sender = make_sender(settings, args.channel)
+        campaign = send_campaign(
+            session,
+            location_id=args.location,
+            channel=args.channel,
+            body=body.strip(),
+            subject=args.subject,
+            sender=sender,
+            limit=args.limit,
+            dry_run=args.dry_run,
+        )
+        verb = "Would reach" if args.dry_run else "Reached"
+        return (
+            f"{verb} {campaign.total} opted-in {args.channel} customer(s): "
+            f"{campaign.sent} sent, {campaign.failed} failed, {campaign.skipped} skipped."
+        )
     raise AssertionError(args.command)
 
 

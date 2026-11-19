@@ -732,3 +732,34 @@ class DeviceSession(BaseModel):
 
 class PairResponse(DeviceSession):
     token: str  # shown once; the till keeps it, the server only stores its hash
+
+
+# --- marketing campaigns -----------------------------------------------------------
+
+
+class CampaignIn(BaseModel):
+    """Send a message to the location's opted-in customers on one channel. ``{name}`` in
+    the body is filled per recipient. A dry run selects the audience but sends nothing."""
+
+    channel: Literal["sms", "email"]
+    body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1600)]
+    subject: str | None = Field(default=None, max_length=200)  # email only
+    limit: int | None = Field(default=None, ge=1, le=100_000)
+    dry_run: bool = False
+
+
+class SendResultOut(BaseModel):
+    to: str
+    status: str  # sent | skipped | failed
+    detail: str | None = None
+    external_ref: str | None = None
+    customer_id: str | None = None
+
+
+class CampaignResultOut(BaseModel):
+    channel: str
+    total: int
+    sent: int
+    failed: int
+    skipped: int
+    results: list[SendResultOut]
