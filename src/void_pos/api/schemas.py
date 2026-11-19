@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -26,6 +26,9 @@ from ..ids import Ulid
 from ..menu.service import TillMenu
 from ..models import Device, Location, MenuChange, OrderLine, Payment, Refund
 from ..orders.views import OrderView
+
+if TYPE_CHECKING:
+    from ..board.service import RequestView
 
 # --- till commands ----------------------------------------------------------------
 
@@ -732,3 +735,47 @@ class DeviceSession(BaseModel):
 
 class PairResponse(DeviceSession):
     token: str  # shown once; the till keeps it, the server only stores its hash
+
+
+# --- request board -----------------------------------------------------------------
+
+RequestStatus = Literal["submitted", "under_review", "planned", "shipped"]
+
+
+class RequestSubmitIn(BaseModel):
+    """A new request for the board. The author is the venue or operator asking for it."""
+
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=200)]
+    body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    author: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+
+
+class RequestStatusIn(BaseModel):
+    status: RequestStatus
+
+
+class RequestOut(BaseModel):
+    id: str
+    title: str
+    body: str
+    author: str
+    status: RequestStatus
+    votes: int  # COUNT of the upvote ledger, never a stored field
+    voted: bool  # whether the caller (this till or the admin) has upvoted it
+    created_at: datetime
+    updated_at: datetime  # moves when the status changes
+
+    @classmethod
+    def of(cls, view: RequestView) -> RequestOut:
+        request = view.request
+        return cls(
+            id=request.id,
+            title=request.title,
+            body=request.body,
+            author=request.author,
+            status=request.status,  # type: ignore[arg-type]
+            votes=view.votes,
+            voted=view.voted,
+            created_at=as_aware(request.created_at),
+            updated_at=as_aware(request.updated_at),
+        )

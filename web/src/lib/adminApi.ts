@@ -24,6 +24,10 @@ import type {
   OrderSummary,
   PairingCodeOut,
   ReceiptOut,
+  RequestOut,
+  RequestSort,
+  RequestStatus,
+  RequestSubmitIn,
   StaffIn,
   StaffOut,
   TillMenu,
@@ -202,6 +206,22 @@ export function createAdminApi(
     async exportBlob(locationId: string): Promise<Blob> {
       const res = await send(`/export/${enc(locationId)}`, {});
       return res.blob();
+    },
+
+    // --- request board -----------------------------------------------------------
+    /** The whole board: "top" is most-voted first, "new" is newest first. */
+    requests(sort: RequestSort = "top"): Promise<RequestOut[]> {
+      return request("/board/requests", { query: { sort } });
+    },
+    submitRequest(body: RequestSubmitIn): Promise<RequestOut> {
+      return request("/board/requests", { method: "POST", body });
+    },
+    /** Upvote; idempotent, so pressing it again leaves the count unchanged. */
+    upvoteRequest(id: string): Promise<RequestOut> {
+      return request(`/board/requests/${enc(id)}/upvote`, { method: "POST" });
+    },
+    setRequestStatus(id: string, status: RequestStatus): Promise<RequestOut> {
+      return request(`/board/requests/${enc(id)}/status`, { method: "POST", body: { status } });
     },
   };
 }

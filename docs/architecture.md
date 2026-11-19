@@ -41,6 +41,7 @@ a socket straight to the kitchen printer.
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
 | `src/void_pos/menu/` | Catalog: items, modifier groups (min/max choices) and modifiers, daily availability windows (`availability.py`), the till's whole-menu read, spreadsheet imports for items and modifiers; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
+| `src/void_pos/board/` | The public feature request board: submit, list with votes, upvote (idempotent), set status |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |
 | `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested) |
@@ -181,6 +182,32 @@ plain receipt. `POST /orders/{id}/print-receipt` prints it on the receipt printe
 is configured; otherwise the till shows it to print from the tablet. Printing a receipt
 records nothing.
 
+## The request board
+
+A public feature request board, the visibility the incumbents don't give: operators ask for
+a feature, upvote the ones they want, and see where each one stands — its status and its
+dates — instead of a request vanishing with no trace. It is plain reference data, not part
+of the event-sourced order pipeline, so it is stored directly (like staff or the CRM) in two
+tables: `feature_request` (title, body, author, status, created/updated dates) and
+`feature_request_vote` (one row per `(request, voter)`).
+
+The one data-model rule it keeps is loyalty's: a count is a `SUM` of a ledger, never a
+stored field. The vote count is always `COUNT` of the vote rows, and the unique
+`(request, voter)` makes an **upvote idempotent** — pressing it again records nothing and
+changes no count. The voter is the caller's own identity — a till's device id, or `admin`
+for the venue admin — taken from the token, never the body, so one till counts once.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `POST /board/requests` | any till or admin | submit a request; it starts `submitted` with no votes |
+| `GET /board/requests?sort=top\|new` | any till or admin | the board: most-voted first (`top`, default) or newest (`new`), each with its votes, status, dates and whether the caller has upvoted |
+| `POST /board/requests/{id}/upvote` | any till or admin | upvote; idempotent |
+| `POST /board/requests/{id}/status` | admin | move it to `submitted` / `under_review` / `planned` / `shipped` |
+
+A request's status is one of `submitted`, `under_review`, `planned`, `shipped`; its
+`updated_at` moves when the status changes. The back office has a **Board** screen
+(`/admin/board`) to submit, upvote and (as admin) move status.
+
 ## Who may do what
 
 Every request except `/health*` and `/devices/pair` carries `Authorization: Bearer <token>`.
@@ -211,6 +238,8 @@ will need signed approvals for offline voids.
 | Read menu, orders, receipts, closeout; print a receipt | own location | any |
 | Switch a dish off or on | with a manager's PIN | yes |
 | Edit menu (one item or a bulk edit, all or nothing), export, staff, venue details, `/admin/*` | no (`admin_only`) | yes |
+| Request board: submit, upvote | yes | yes |
+| Request board: set a request's status | no (`admin_only`) | yes |
 
 ## Errors
 
@@ -227,7 +256,7 @@ anything unexpected is a logged 500 `internal_error`.
 | 403 | `till_only`, `admin_only`, `admin_disabled`, `wrong_location`, `foreign_event`, `manager_pin_required`, `wrong_pin` |
 | 404 | `not_found`, `unknown_entity` |
 | 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `order_paid`, `payment_exists`, `range_overlap`, `device_revoked`, `item_unavailable`, `modifier_unavailable`, `changed_since`, `already_reverted`, `in_use`, `group_missing`, `line_exists`, `pin_taken` |
-| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn`, `order_too_long` |
+| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn`, `order_too_long`, `invalid_status` |
 | 429 | `too_many_attempts` |
 | 503 | `printer_unavailable`, `no_receipt_printer`, `database_unavailable` |
 
