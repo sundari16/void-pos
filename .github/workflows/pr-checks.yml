@@ -77,7 +77,7 @@ jobs:
   venue-stack:
     # The self-host install as a venue runs it: build the images, start the stack, and
     # drive it end to end through the web proxy and the API.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright 1.51's Chromium supports up to 24.04
     needs: [python, web]
     steps:
       - uses: actions/checkout@v4
