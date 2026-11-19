@@ -266,9 +266,29 @@ class VoidResponse(BaseModel):
     replayed: bool = False
 
 
+class StripeIntentRequest(BaseModel):
+    """Start a card payment through Stripe: what will be charged (amount plus tip)."""
+
+    payment_id: Ulid  # the till's id for the payment it will record
+    amount_cents: int = Field(ge=1)
+    tip_cents: int = Field(default=0, ge=0, le=MAX_LINE_CENTS)
+
+
+class StripeIntentOut(BaseModel):
+    payment_intent_id: str
+    client_secret: str
+    publishable_key: str
+
+
+class StripeConfigOut(BaseModel):
+    enabled: bool
+    publishable_key: str | None
+
+
 class PayRequest(CommandIn):
     payment_id: Ulid
-    method: Literal["cash", "external"] = "cash"
+    method: Literal["cash", "external", "stripe"] = "cash"
+    stripe_payment_intent_id: str | None = Field(default=None, max_length=100)
     external_ref: str | None = Field(default=None, min_length=1, max_length=200)
     amount_cents: int | None = Field(default=None, ge=0)  # default: all that is owing
     tip_cents: int = Field(default=0, ge=0, le=MAX_LINE_CENTS)  # on top of the amount
@@ -278,6 +298,8 @@ class PayRequest(CommandIn):
     def _external_needs_ref(self) -> PayRequest:
         if self.method == "external" and not self.external_ref:
             raise ValueError("external_ref is required for method 'external'")
+        if self.method == "stripe" and not self.stripe_payment_intent_id:
+            raise ValueError("stripe_payment_intent_id is required for method 'stripe'")
         return self
 
 

@@ -9,11 +9,12 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
+from ..balance import balance_cents
 from ..clock import local_date
 from ..commands import Command
 from ..config import Settings, get_settings
 from ..devices import get_location
-from ..errors import ServiceUnavailable
+from ..errors import Conflict, InvalidRequest, ServiceUnavailable
 from ..events.payloads import AdjustmentIn
 from ..export import export_csv, export_location
 from ..models import Order, Payment
@@ -38,13 +39,14 @@ from ..payments import (
     pay_order,
     refund_payment,
 )
+from ..payments.stripe import StripeApi, StripeProvider
 from ..printing import Printer, Rasterizer
 from ..receipts import build_receipt, encode_receipt
 from ..reporting import shift_closeout
 from ..sync import MAX_PULL, pull_events, push_events
 from .approval import PinLimiterDep, approve
 from .auth import AdminDep, DeviceDep, PrincipalDep
-from .deps import get_printer, get_rasterizer, get_receipt_printer, get_session
+from .deps import get_printer, get_rasterizer, get_receipt_printer, get_session, get_stripe
 from .schemas import (
     Ack,
     AddLinesRequest,
@@ -64,6 +66,9 @@ from .schemas import (
     ReceiptPrinted,
     RefundRequest,
     RemoveLinesRequest,
+    StripeConfigOut,
+    StripeIntentOut,
+    StripeIntentRequest,
     VoidRequest,
     VoidResponse,
 )
@@ -74,6 +79,8 @@ SessionDep = Annotated[Session, Depends(get_session)]
 PrinterDep = Annotated[Printer | None, Depends(get_printer)]
 RasterizerDep = Annotated[Rasterizer | None, Depends(get_rasterizer)]
 ReceiptPrinterDep = Annotated[Printer | None, Depends(get_receipt_printer)]
+StripeDep = Annotated[StripeApi | None, Depends(get_stripe)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 OrderState = Literal["open", "sent", "paid", "voided"]
 
 
@@ -220,13 +227,17 @@ def void_route(
 
 @router.post("/orders/{order_id}/pay", response_model=PaymentResponse, tags=["orders"])
 def pay_route(
-    order_id: str, body: PayRequest, session: SessionDep, device: DeviceDep
+    order_id: str, body: PayRequest, session: SessionDep, device: DeviceDep, stripe: StripeDep
 ) -> PaymentResponse:
-    provider: PaymentProvider = (
-        ExternalProvider(external_ref=body.external_ref or "")
-        if body.method == "external"
-        else CashProvider()
-    )
+    provider: PaymentProvider
+    if body.method == "stripe":
+        provider = StripeProvider(
+            _stripe_or_503(stripe), body.stripe_payment_intent_id or "", body.payment_id
+        )
+    elif body.method == "external":
+        provider = ExternalProvider(external_ref=body.external_ref or "")
+    else:
+        provider = CashProvider()
     outcome = pay_order(
         session,
         device,
@@ -254,12 +265,74 @@ def pay_route(
     )
 
 
-def _refund_provider(session: Session, payment_id: str, external_ref: str | None) -> PaymentProvider:
+def _stripe_or_503(stripe: StripeApi | None) -> StripeApi:
+    if stripe is None:
+        raise ServiceUnavailable(
+            "card payments through Stripe aren't set up on this server", code="stripe_not_set_up"
+        )
+    return stripe
+
+
+def _refund_provider(
+    session: Session, payment_id: str, external_ref: str | None, stripe: StripeApi | None
+) -> PaymentProvider:
     """Refund through the payment's own provider."""
     payment = session.get(Payment, payment_id)
     if payment is not None and payment.provider == "external":
         return ExternalProvider(external_ref=external_ref or "")
+    if payment is not None and payment.provider == "stripe":
+        return StripeProvider(_stripe_or_503(stripe))
     return CashProvider()
+
+
+@router.get("/payments/stripe", response_model=StripeConfigOut, tags=["payments"])
+def stripe_config(settings: SettingsDep, _: PrincipalDep) -> StripeConfigOut:
+    """Whether the till can take cards through Stripe, and the key its browser uses."""
+    return StripeConfigOut(
+        enabled=settings.stripe_enabled, publishable_key=settings.stripe_publishable_key
+    )
+
+
+@router.post(
+    "/orders/{order_id}/stripe-intent", response_model=StripeIntentOut, tags=["payments"]
+)
+def stripe_intent(
+    order_id: str,
+    body: StripeIntentRequest,
+    session: SessionDep,
+    device: DeviceDep,
+    stripe: StripeDep,
+    settings: SettingsDep,
+) -> StripeIntentOut:
+    """Start a card payment for part or all of what's owing (plus any tip). Nothing is
+    recorded until the till confirms it with POST /orders/{id}/pay, method "stripe"."""
+    api = _stripe_or_503(stripe)
+    order = get_order(session, order_id, location_id=device.location_id)
+    if order.state not in UNSETTLED:
+        raise Conflict(f"this order is already {order.state}", code="order_closed")
+    owing = balance_cents(session, order_id)
+    if body.amount_cents > owing:
+        raise InvalidRequest(
+            f"the payment of {body.amount_cents} cents is more than the {owing} cents owing",
+            code="amount_exceeds_balance",
+            balance_cents=owing,
+        )
+    intent = api.create_intent(
+        amount_cents=body.amount_cents + body.tip_cents,
+        currency="aud",
+        idempotency_key=f"intent-{body.payment_id}",
+        metadata={
+            "order_id": order_id,
+            "payment_id": body.payment_id,
+            "order_number": str(order.order_number),
+            "location_id": order.location_id,
+        },
+    )
+    return StripeIntentOut(
+        payment_intent_id=str(intent["id"]),
+        client_secret=str(intent["client_secret"]),
+        publishable_key=settings.stripe_publishable_key or "",
+    )
 
 
 @router.post("/orders/{order_id}/remove-lines", response_model=OrderResponse, tags=["orders"])
@@ -322,7 +395,12 @@ def remove_adjustment_route(
 
 @router.post("/orders/{order_id}/refunds", response_model=OrderResponse, tags=["orders"])
 def refund_route(
-    order_id: str, body: RefundRequest, session: SessionDep, device: DeviceDep, pins: PinLimiterDep
+    order_id: str,
+    body: RefundRequest,
+    session: SessionDep,
+    device: DeviceDep,
+    pins: PinLimiterDep,
+    stripe: StripeDep,
 ) -> OrderResponse:
     """Give money back against a payment of a paid order, through its own provider, with
     a manager's PIN once the venue has a manager."""
@@ -330,7 +408,7 @@ def refund_route(
         session,
         device,
         order_id,
-        _refund_provider(session, body.payment_id, body.external_ref),
+        _refund_provider(session, body.payment_id, body.external_ref, stripe),
         _command(body),
         refund_id=body.refund_id,
         payment_id=body.payment_id,

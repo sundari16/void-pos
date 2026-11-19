@@ -20,6 +20,8 @@ import type {
   ReceiptOut,
   RefundRequest,
   RemoveLinesRequest,
+  StripeConfigOut,
+  StripeIntentOut,
   TillMenu,
   VoidRequest,
   VoidResponse,
@@ -131,6 +133,16 @@ export function createApi(fetchImpl: Fetch = (input, init) => fetch(input, init)
     },
     refund(token: string, orderId: string, body: RefundRequest): Promise<OrderResponse> {
       return request(`/orders/${orderId}/refunds`, { method: "POST", token, body });
+    },
+    stripeConfig(token: string): Promise<StripeConfigOut> {
+      return request("/payments/stripe", { token });
+    },
+    stripeIntent(
+      token: string,
+      orderId: string,
+      body: { payment_id: string; amount_cents: number; tip_cents: number },
+    ): Promise<StripeIntentOut> {
+      return request(`/orders/${orderId}/stripe-intent`, { method: "POST", token, body });
     },
     receipt(token: string, orderId: string): Promise<ReceiptOut> {
       return request(`/orders/${orderId}/receipt`, { token });

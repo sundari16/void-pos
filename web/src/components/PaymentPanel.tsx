@@ -26,12 +26,15 @@ export function PaymentPanel({
   busy,
   retryMethod,
   onPay,
+  onStripe,
 }: {
   balanceCents: number;
   busy: boolean;
   /** An unconfirmed earlier payment: the only way on is to resend it as it was. */
   retryMethod: PayMethod | null;
   onPay: (method: PayMethod, amountCents: number, externalRef?: string, tipCents?: number) => void;
+  /** Card through Stripe on this screen; absent when Stripe isn't set up. */
+  onStripe?: (amountCents: number, tipCents: number) => void;
 }) {
   const [split, setSplit] = useState<Split | null>(null);
   const [amount, setAmount] = useState(centsToInput(balanceCents));
@@ -125,7 +128,7 @@ export function PaymentPanel({
         disabled={busy}
         className="w-full rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
       >
-        {busy ? "Paying…" : `Retry ${retryMethod === "external" ? "card" : "cash"} payment`}
+        {busy ? "Paying…" : `Retry ${retryMethod === "cash" ? "cash" : "card"} payment`}
       </button>
     );
   }
@@ -268,6 +271,19 @@ export function PaymentPanel({
           >
             Card on terminal
           </button>
+          {onStripe && (
+            <button
+              onClick={() => {
+                const cents = checkedAmount();
+                const tip = cents === null ? null : tipCents(cents);
+                if (cents !== null && tip !== null) onStripe(cents, tip);
+              }}
+              disabled={busy}
+              className="col-span-2 rounded-xl border border-accent px-4 py-3 font-semibold text-accent disabled:opacity-40"
+            >
+              Card on this screen (Stripe)
+            </button>
+          )}
         </div>
       )}
     </div>

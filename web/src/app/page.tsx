@@ -50,6 +50,7 @@ import { PlacedLines } from "@/components/PlacedLines";
 import { ReceiptDialog } from "@/components/ReceiptDialog";
 import { RefundDialog, type RefundChoice } from "@/components/RefundDialog";
 import { RemoveItemDialog } from "@/components/RemoveItemDialog";
+import { StripeCardDialog } from "@/components/StripeCardDialog";
 import { VoidPanel } from "@/components/VoidPanel";
 import { REVOKED_NOTICE, useTill } from "@/components/TillProvider";
 
@@ -112,6 +113,14 @@ export default function PosPage() {
   const [pinAsk, setPinAsk] = useState<PinAsk | null>(null);
   const [removing, setRemoving] = useState<OrderLineOut | null>(null);
   const [showRefund, setShowRefund] = useState(false);
+  const [stripeOn, setStripeOn] = useState(false);
+  // A card payment through Stripe in progress: its payment id is fixed so the intent and
+  // the recorded payment match, and a retry reuses both.
+  const [stripeCheckout, setStripeCheckout] = useState<{
+    paymentId: string;
+    amount: number;
+    tip: number;
+  } | null>(null);
 
   // A command's body (and so its ids) lives here until the server answers, so tapping
   // again after a dropped connection resends the same ids and can't duplicate anything.
@@ -153,6 +162,14 @@ export default function PosPage() {
     const tick = setInterval(() => setNow(localClock(timezone)), CLOCK_TICK_MS);
     return () => clearInterval(tick);
   }, [timezone]);
+
+  useEffect(() => {
+    if (!token) return;
+    api
+      .stripeConfig(token)
+      .then((c) => setStripeOn(c.enabled))
+      .catch(() => setStripeOn(false));
+  }, [token]);
 
   const loadOpenOrders = useCallback(
     () => (token && locationId ? api.openOrders(token, locationId) : Promise.resolve([])),
@@ -320,7 +337,13 @@ export default function PosPage() {
 
   /** Pay the order. An unconfirmed earlier attempt is always resent as it was, whichever
    *  button is pressed, so a dropped connection can't turn into a second charge. */
-  async function pay(method: PayMethod, amountCents: number, externalRef?: string, tipCents = 0) {
+  async function pay(
+    method: PayMethod,
+    amountCents: number,
+    externalRef?: string,
+    tipCents = 0,
+    stripe?: { paymentId: string; intentId: string },
+  ) {
     if (!till || !order) return;
     setBusy("pay");
     setActionError(null);
@@ -329,11 +352,12 @@ export default function PosPage() {
         pendingPay,
         (): PayRequest => ({
           ...command(),
-          payment_id: ulid(),
+          payment_id: stripe?.paymentId ?? ulid(),
           method,
           amount_cents: amountCents,
           tip_cents: tipCents,
           external_ref: method === "external" ? externalRef : null,
+          stripe_payment_intent_id: stripe?.intentId ?? null,
         }),
         (body) => api.payOrder(till.token, order.id, body),
       );
@@ -786,6 +810,11 @@ export default function PosPage() {
                     busy={busy === "pay"}
                     retryMethod={pendingPay.current?.method ?? null}
                     onPay={(method, amount, ref, tip) => void pay(method, amount, ref, tip)}
+                    onStripe={
+                      stripeOn
+                        ? (amount, tip) => setStripeCheckout({ paymentId: ulid(), amount, tip })
+                        : undefined
+                    }
                   />
                 )}
                 {isUnsettled(order) && draft.length > 0 && (
@@ -850,6 +879,25 @@ export default function PosPage() {
           load={() => api.receipt(till.token, order.id)}
           print={() => api.printReceipt(till.token, order.id)}
           onClose={() => setShowReceipt(false)}
+        />
+      )}
+      {stripeCheckout && order && (
+        <StripeCardDialog
+          amountCents={stripeCheckout.amount}
+          tipCents={stripeCheckout.tip}
+          start={() =>
+            api.stripeIntent(till.token, order.id, {
+              payment_id: stripeCheckout.paymentId,
+              amount_cents: stripeCheckout.amount,
+              tip_cents: stripeCheckout.tip,
+            })
+          }
+          onPaid={(intentId) => {
+            const { paymentId, amount, tip } = stripeCheckout;
+            setStripeCheckout(null);
+            void pay("stripe", amount, undefined, tip, { paymentId, intentId });
+          }}
+          onClose={() => setStripeCheckout(null)}
         />
       )}
       {removing && (

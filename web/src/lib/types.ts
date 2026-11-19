@@ -243,9 +243,22 @@ export interface VoidResponse {
   replayed: boolean;
 }
 
+export interface StripeIntentOut {
+  payment_intent_id: string;
+  client_secret: string;
+  publishable_key: string;
+}
+
+export interface StripeConfigOut {
+  enabled: boolean;
+  publishable_key: string | null;
+}
+
 export interface PayRequest extends CommandIn {
   payment_id: string;
-  method: "cash" | "external";
+  method: "cash" | "external" | "stripe";
+  /** For a card taken through Stripe: the payment intent it went through on. */
+  stripe_payment_intent_id?: string | null;
   external_ref?: string | null;
   amount_cents?: number | null;
   /** On top of the amount; not part of sales. */

@@ -2,7 +2,7 @@
 // terminal and recorded here with the terminal's receipt or approval number (method
 // "external"). Integrated card payments (Stripe) come later through the same seam.
 
-export type PayMethod = "cash" | "external";
+export type PayMethod = "cash" | "external" | "stripe";
 
 const LABELS: Record<string, string> = {
   cash: "Cash",

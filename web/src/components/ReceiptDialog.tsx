@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { friendlyError } from "@/lib/commands";
 import { formatCents } from "@/lib/money";
@@ -19,16 +19,18 @@ export function ReceiptDialog({
   const [receipt, setReceipt] = useState<ReceiptOut | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [printing, setPrinting] = useState(false);
+  const loadRef = useRef(load); // load once; the page re-renders on its clock
 
   useEffect(() => {
     let active = true;
-    load()
+    loadRef
+      .current()
       .then((r) => active && setReceipt(r))
       .catch((err) => active && setMessage(friendlyError(err)));
     return () => {
       active = false;
     };
-  }, [load]);
+  }, []);
 
   async function toPrinter() {
     setPrinting(true);
