@@ -13,6 +13,7 @@ const NAV = [
   { href: "/admin/tills", label: "Tills" },
   { href: "/admin/venue", label: "Venue" },
   { href: "/admin/sales", label: "Sales" },
+  { href: "/admin/board", label: "Board" },
 ];
 
 /** Sign in, pick a location, then the back office with its left-hand nav. */

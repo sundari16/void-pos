@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import Base
+from .board import FeatureRequest, FeatureRequestVote
 from .catalog import MenuChange, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
 from .crm import Customer
 from .event import Event, SyncCounter
@@ -16,6 +17,8 @@ __all__ = [
     "Customer",
     "Device",
     "Event",
+    "FeatureRequest",
+    "FeatureRequestVote",
     "Location",
     "LoyaltyLedger",
     "MenuChange",

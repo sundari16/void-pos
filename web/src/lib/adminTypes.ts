@@ -121,3 +121,29 @@ export interface DeviceCreated extends PairingCodeOut {
 }
 
 export type OrderState = "open" | "sent" | "paid" | "voided";
+
+// --- request board -----------------------------------------------------------------
+
+export type RequestStatus = "submitted" | "under_review" | "planned" | "shipped";
+
+export type RequestSort = "top" | "new";
+
+/** A feature request on the public board (GET/POST /board/requests). */
+export interface RequestOut {
+  id: string;
+  title: string;
+  body: string;
+  author: string;
+  status: RequestStatus;
+  votes: number;
+  voted: boolean; // whether this venue has upvoted it
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /board/requests. */
+export interface RequestSubmitIn {
+  title: string;
+  body: string;
+  author: string;
+}
