@@ -41,6 +41,7 @@ a socket straight to the kitchen printer.
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
 | `src/void_pos/menu/` | Catalog: items, modifier groups (min/max choices) and modifiers, daily availability windows (`availability.py`), the till's whole-menu read, spreadsheet imports for items and modifiers; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
+| `src/void_pos/delivery/` | On-demand delivery dispatch: a partner-neutral `DeliveryProvider` seam + the open-core `MockCourier`; dispatch a courier for an own-channel delivery order, track its status, cancel it. The Uber Direct adapter is commercial (`uber_direct.py` is the seam + a note) |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |
 | `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested) |
@@ -243,7 +244,37 @@ Money is integer cents (AUD by default). Timestamps are stored in UTC. Business 
 the location's timezone, so an order rung up at 8am in Brisbane is on that day's closeout,
 not the previous UTC day's.
 
-## Delivery
+## On-demand delivery dispatch
+
+A venue with its own delivery orders (taken on the till, by phone/voice, or through its own
+web storefront — the `pos`, `voice`, `qr` and `web` channels) can send a courier without
+running a driver team. `src/void_pos/delivery/` carries a partner-neutral provider seam —
+`DeliveryProvider.request_delivery` / `get_status` / `cancel` — exactly mirroring the
+payments split: `MockCourier` ships in the open core (fully testable, no network), and the
+real **Uber Direct** adapter (which needs a merchant's partner credentials) implements the
+same protocol in the commercial layer. `uber_direct.py` is the seam plus a note; nothing in
+the core hardcodes a courier's API.
+
+A delivery is keyed on our own ULID, which the dispatching till mints and which doubles as
+the provider's idempotency key, so a retry after a dropped connection returns the same job
+and never puts a second courier on the road — the same rule payments follow, and the
+courier platform's own delivery id lives in `external_ref`, never as the key. The provider
+is asked *before* the row is written (checks run first), so a courier that can't be reached
+leaves nothing recorded and the till simply retries. Dispatch is refused for a non-delivery
+order, an aggregator order (those carry the platform's own courier), a voided order, or an
+order that already has a courier on the way.
+
+Status (`requested → accepted → picked_up → delivered`, or `canceled` / `failed`) moves
+through a small state machine as the courier platform reports it: a repeat is an idempotent
+no-op, a move the machine forbids is refused. A delivery can be cancelled only before the
+courier collects. Surfaces: `POST /orders/{id}/delivery` (dispatch, a till),
+`GET /orders/{id}/delivery` and `GET /deliveries/{id}` (track), `POST /deliveries/{id}/status`
+(the courier callback — admin token in the open core, a verified webhook in a real adapter),
+`POST /deliveries/{id}/cancel`; plus `void-pos delivery-dispatch` / `delivery-status` to
+simulate a dispatch and a callback. The delivery fee is recorded in integer cents; it is
+not folded into the order total in the open core. See `docs/delivery.md`.
+
+## CI and dependencies
 
 - `constraints.txt` pins every Python dependency; CI and the API image install with it.
   `web/package-lock.json` does the same for the web till.

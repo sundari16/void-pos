@@ -7,7 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .api import admin_router, device_router, install_error_handlers, menu_router, router
+from .api import (
+    admin_router,
+    delivery_router,
+    device_router,
+    install_error_handlers,
+    menu_router,
+    router,
+)
 from .api.deps import get_session
 from .config import settings
 from .errors import ServiceUnavailable
@@ -27,6 +34,7 @@ app.include_router(device_router)
 app.include_router(router)
 app.include_router(menu_router)
 app.include_router(admin_router)
+app.include_router(delivery_router)
 
 
 @app.get("/health", tags=["health"])
