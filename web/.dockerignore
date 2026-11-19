@@ -4,3 +4,7 @@ out
 .env*.local
 *.tsbuildinfo
 Dockerfile
+e2e
+e2e-report
+test-results
+playwright.config.ts
