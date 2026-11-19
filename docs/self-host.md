@@ -219,6 +219,94 @@ Taking a backup right now: `docker compose restart backup`.
 The owner can take everything out at any time, as JSON or CSV, with the admin token:
 `GET /export/{location_id}` and `GET /export/{location_id}/csv/{orders|order_lines|payments|...}`.
 
+## Accounting (Xero)
+
+Void POS can push each day's takings to the venue's **own** Xero organisation — one "Daily
+takings" sales invoice per business date, with sales split by revenue class, the GST, tips,
+discounts, surcharges and refunds, marked paid into bank/clearing accounts by payment type
+(cash, card on terminal, Stripe). It reads only the closeout figures; it changes nothing in
+Xero beyond that one invoice per day. Like the Square import, it uses the venue's own Xero
+connection — nothing goes through a Void account.
+
+### One-off: a Xero app and the connection
+
+1. At [developer.xero.com](https://developer.xero.com) create an app for the venue (an
+   "Auth Code" / web app). Add a redirect URI — `http://localhost:8000/xero/callback` is
+   fine for a venue machine — and copy the **client id** and a **client secret**.
+2. Put them in `.env` and restart the API:
+
+   ```
+   VOIDPOS_XERO_CLIENT_ID=<client id>
+   VOIDPOS_XERO_CLIENT_SECRET=<client secret>
+   VOIDPOS_XERO_REDIRECT_URI=http://localhost:8000/xero/callback
+   ```
+
+3. Connect the org once (the command prints a sign-in URL, then waits for you to paste back
+   the URL Xero redirects you to):
+
+   ```bash
+   docker compose exec api void-pos xero-connect --location <location id>
+   ```
+
+   Sign in as the venue, choose the organisation and authorise. The connection (the Xero
+   org and a refresh token) is stored on the venue machine; the client secret and that token
+   are as sensitive as the admin token — keep `.env` and the database private. Re-run
+   `xero-connect` any time to reconnect or switch org.
+
+### Account-code mapping
+
+The invoice posts to account **codes** from the venue's Xero chart of accounts. Sensible
+Australian defaults are built in, but the bank/clearing codes especially must point at the
+venue's own accounts. Print the mapping in force, then store an override (only the keys you
+change; the rest keep their defaults):
+
+```bash
+docker compose exec api void-pos xero-accounts --location <location id>
+docker compose exec -T api void-pos xero-accounts --location <location id> --file - < accounts.json
+```
+
+```json
+{
+  "sales_account": "200",
+  "class_accounts": {"Drinks": "201"},
+  "gst_free_classes": [],
+  "discounts_account": "200",
+  "surcharges_account": "200",
+  "tips_account": "820",
+  "rounding_account": "860",
+  "clearing_accounts": {"cash": "090", "external": "091", "stripe": "092"},
+  "default_clearing": "090",
+  "tax_type": "OUTPUT",
+  "gst_free_tax_type": "EXEMPTOUTPUT",
+  "contact_name": "Daily Takings"
+}
+```
+
+- Sales go to `sales_account`, or `class_accounts[<revenue class>]` where listed.
+- The day's actual GST is apportioned across the taxable classes, so the invoice's GST
+  equals the closeout's. List any GST-free revenue classes in `gst_free_classes`; they then
+  carry no GST (tax type `gst_free_tax_type`).
+- `clearing_accounts` maps a payment provider (`cash`, `external` for card-on-terminal,
+  `stripe`) to the bank/clearing account its takings are banked into; a provider not listed
+  uses `default_clearing`. `tax_type` / `gst_free_tax_type` are Xero AU tax-type codes
+  (`OUTPUT` = GST on Income, `EXEMPTOUTPUT` = GST Free Income).
+
+### Pushing a day
+
+Always dry-run first — it prints the full summary and the exact Xero invoice payload and
+sends nothing, so you can check the codes against your chart:
+
+```bash
+docker compose exec api void-pos xero-push --location <location id> --business-date 2026-11-15 --dry-run
+docker compose exec api void-pos xero-push --location <location id> --business-date 2026-11-15
+```
+
+The push is idempotent per (location, business date): it finds the one invoice for that day
+(reference `VPOS-<location>-<YYYYMMDD>`), clears its payments, updates it and re-applies the
+payments — so pushing the same day again never double-counts. Push after the day is settled
+(no open orders); an open balance is absorbed by a rounding line and flagged. Dates are the
+location's own calendar (an order rung up after midnight still belongs to the prior day).
+
 ## Upgrade
 
 ```bash

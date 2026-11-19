@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     # Square: an access token, only to read the item library for the menu import.
     square_access_token: SecretStr | None = None
 
+    # Xero daily-takings sync (optional). The venue's own Xero app, OAuth2 auth-code flow:
+    # the client id/secret of a Xero app the venue owns, and the redirect URI registered on
+    # it. Unset = off. See docs/self-host.md "Accounting (Xero)".
+    xero_client_id: SecretStr | None = None
+    xero_client_secret: SecretStr | None = None
+    xero_redirect_uri: str = "http://localhost:8000/xero/callback"
+    xero_scopes: str = (
+        "offline_access accounting.transactions accounting.contacts accounting.settings"
+    )
+
     @field_validator(
         "admin_token",
         "kitchen_printer_host",
@@ -44,6 +54,8 @@ class Settings(BaseSettings):
         "stripe_secret_key",
         "stripe_publishable_key",
         "square_access_token",
+        "xero_client_id",
+        "xero_client_secret",
         mode="before",
     )
     @classmethod
@@ -76,6 +88,10 @@ class Settings(BaseSettings):
     @property
     def stripe_enabled(self) -> bool:
         return self.stripe_secret_key is not None and self.stripe_publishable_key is not None
+
+    @property
+    def xero_enabled(self) -> bool:
+        return self.xero_client_id is not None and self.xero_client_secret is not None
 
     @property
     def cors_origin_list(self) -> list[str]:

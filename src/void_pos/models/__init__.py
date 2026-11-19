@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .accounting import XeroConnection
 from .base import Base
 from .catalog import MenuChange, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
 from .crm import Customer
@@ -31,4 +32,5 @@ __all__ = [
     "Refund",
     "Staff",
     "SyncCounter",
+    "XeroConnection",
 ]
