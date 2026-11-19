@@ -16,8 +16,8 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
-  await page.close();
-  await venue.admin.dispose();
+  await page?.close();
+  await venue?.admin.dispose();
 });
 
 const ticket = () => page.locator("aside");
@@ -82,9 +82,10 @@ test("take an item off, with a manager's PIN once the kitchen has it", async () 
 
 test("a discount needs a manager; the holiday surcharge doesn't", async () => {
   await page.getByRole("button", { name: "Discount", exact: true }).click();
-  await page.getByRole("button", { name: "10%" }).click();
-  await page.getByLabel("Discount reason").fill("Regulars");
-  await page.getByRole("button", { name: "Apply discount" }).click();
+  const form = page.getByRole("form", { name: "Discount" });
+  await form.getByRole("button", { name: "10%" }).click();
+  await form.getByLabel("Discount reason").fill("Regulars");
+  await form.getByRole("button", { name: "Apply discount" }).click();
   await approve();
   await expect(ticket().getByText("Regulars")).toBeVisible();
   await page.getByRole("button", { name: /Public holiday surcharge 15%/ }).click();
@@ -150,7 +151,9 @@ test("mark a dish sold out and back on, with a manager's PIN", async () => {
 
 test("the closeout adds it all up", async () => {
   await page.getByRole("link", { name: "Closeout" }).click();
-  await expect(page.getByText("Paid orders and GST")).toBeVisible();
+  await page.waitForURL("**/closeout");
+  // A dev server builds the page on first visit; the production build is instant.
+  await expect(page.getByText("Paid orders and GST")).toBeVisible({ timeout: 60_000 });
   for (const label of ["GST", "Discounts given", "Surcharges", "Refunds", "Tips (not sales)"]) {
     await expect(page.getByText(label, { exact: true })).toBeVisible();
   }

@@ -150,7 +150,8 @@ export interface LineRow {
 
 /** An order's lines as rows, each item followed by its modifiers. A modifier's quantity is
  *  per unit of its item, so its amount is price x quantity x the item's quantity. */
-export function lineRows(lines: OrderLineOut[]): LineRow[] {
+export function lineRows(allLines: OrderLineOut[]): LineRow[] {
+  const lines = allLines.filter((line) => !line.removed); // taken off the order
   const children = new Map<string, OrderLineOut[]>();
   for (const line of lines) {
     if (line.parent_line_id) {

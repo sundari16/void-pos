@@ -141,6 +141,7 @@ function line(over: Partial<OrderLineOut>): OrderLineOut {
     seat_number: null,
     course_number: null,
     sent: true,
+    removed: false,
     ...over,
   };
 }

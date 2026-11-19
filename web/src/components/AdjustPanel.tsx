@@ -78,6 +78,7 @@ export function AdjustPanel({
       )}
       {open ? (
         <form
+          aria-label="Discount"
           onSubmit={(e) => {
             e.preventDefault();
             submit();
