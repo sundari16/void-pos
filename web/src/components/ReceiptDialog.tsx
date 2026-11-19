@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { friendlyError } from "@/lib/commands";
 import { formatCents } from "@/lib/money";
@@ -19,16 +19,18 @@ export function ReceiptDialog({
   const [receipt, setReceipt] = useState<ReceiptOut | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [printing, setPrinting] = useState(false);
+  const loadRef = useRef(load); // load once; the page re-renders on its clock
 
   useEffect(() => {
     let active = true;
-    load()
+    loadRef
+      .current()
       .then((r) => active && setReceipt(r))
       .catch((err) => active && setMessage(friendlyError(err)));
     return () => {
       active = false;
     };
-  }, [load]);
+  }, []);
 
   async function toPrinter() {
     setPrinting(true);
@@ -118,12 +120,26 @@ function Paper({ receipt }: { receipt: ReceiptOut }) {
             />
           ))}
           <hr className="my-2 border-dashed border-black" />
+          {receipt.subtotal_cents !== null && (
+            <>
+              <Row left="Subtotal" right={formatCents(receipt.subtotal_cents)} />
+              {receipt.adjustments.map((a, i) => (
+                <Row key={i} left={a.name} right={formatCents(a.amount_cents)} />
+              ))}
+            </>
+          )}
           <Row left="TOTAL" right={formatCents(receipt.total_cents)} bold />
           <Row left="Includes GST" right={formatCents(receipt.gst_cents)} />
           {receipt.payments.map((p, i) => (
             <div key={i}>
               <Row left={p.label} right={formatCents(p.amount_cents)} />
               {p.reference && <p className="pl-4 text-xs">Ref {p.reference}</p>}
+            </div>
+          ))}
+          {receipt.refunds.map((r, i) => (
+            <div key={`r${i}`}>
+              <Row left={r.label} right={formatCents(r.amount_cents)} />
+              {r.reference && <p className="pl-4 text-xs">Ref {r.reference}</p>}
             </div>
           ))}
           {receipt.balance_cents > 0 && !receipt.voided && (

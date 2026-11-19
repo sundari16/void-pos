@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
 from ..db import get_sessionmaker
+from ..payments.stripe import StripeApi, StripeHttp
 from ..printing import NetworkPrinter, PillowRasterizer, Printer, Rasterizer
 
 
@@ -35,4 +36,11 @@ def get_receipt_printer(settings: Annotated[Settings, Depends(get_settings)]) ->
     """The customer receipt printer, or None when none is configured."""
     if settings.receipt_printer_host:
         return NetworkPrinter(settings.receipt_printer_host, settings.receipt_printer_port)
+    return None
+
+
+def get_stripe(settings: Annotated[Settings, Depends(get_settings)]) -> StripeApi | None:
+    """Stripe (sandbox), or None when no keys are set."""
+    if settings.stripe_enabled and settings.stripe_secret_key is not None:
+        return StripeHttp(settings.stripe_secret_key.get_secret_value())
     return None

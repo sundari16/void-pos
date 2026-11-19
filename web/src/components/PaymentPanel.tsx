@@ -9,8 +9,10 @@ import {
   terminalRef,
   type PayMethod,
 } from "@/lib/payments";
+import { percentText, tipFor } from "@/lib/placed";
 
 const SPLITS = [2, 3, 4];
+const TIPS = [1000, 1500];
 
 interface Split {
   shares: number[];
@@ -24,12 +26,15 @@ export function PaymentPanel({
   busy,
   retryMethod,
   onPay,
+  onStripe,
 }: {
   balanceCents: number;
   busy: boolean;
   /** An unconfirmed earlier payment: the only way on is to resend it as it was. */
   retryMethod: PayMethod | null;
-  onPay: (method: PayMethod, amountCents: number, externalRef?: string) => void;
+  onPay: (method: PayMethod, amountCents: number, externalRef?: string, tipCents?: number) => void;
+  /** Card through Stripe on this screen; absent when Stripe isn't set up. */
+  onStripe?: (amountCents: number, tipCents: number) => void;
 }) {
   const [split, setSplit] = useState<Split | null>(null);
   const [amount, setAmount] = useState(centsToInput(balanceCents));
@@ -37,6 +42,9 @@ export function PaymentPanel({
   const [cardOpen, setCardOpen] = useState(false);
   const [cardRef, setCardRef] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // A tip: a share of the amount being paid, or a typed amount; 0 = none.
+  const [tipBp, setTipBp] = useState<number | null>(0);
+  const [tipText, setTipText] = useState("");
 
   // A payment went through: move on to the next share, or to whatever is left.
   if (balanceCents !== lastBalance) {
@@ -50,6 +58,8 @@ export function PaymentPanel({
     setCardOpen(false);
     setCardRef("");
     setError(null);
+    setTipBp(0);
+    setTipText("");
   }
 
   function chooseSplit(ways: number | null) {
@@ -82,9 +92,20 @@ export function PaymentPanel({
     return parsed.cents;
   }
 
+  function tipCents(amountCents: number): number | null {
+    if (tipBp !== null) return tipFor(amountCents, tipBp);
+    const parsed = parseDollars(tipText || "0");
+    if ("error" in parsed) {
+      setError("Enter a tip like 5.00.");
+      return null;
+    }
+    return parsed.cents;
+  }
+
   function payCash() {
     const cents = checkedAmount();
-    if (cents !== null) onPay("cash", cents);
+    const tip = cents === null ? null : tipCents(cents);
+    if (cents !== null && tip !== null) onPay("cash", cents, undefined, tip);
   }
 
   function payCard() {
@@ -95,7 +116,9 @@ export function PaymentPanel({
       setError(checked.error);
       return;
     }
-    onPay("external", cents, checked.ref);
+    const tip = tipCents(cents);
+    if (tip === null) return;
+    onPay("external", cents, checked.ref, tip);
   }
 
   if (retryMethod) {
@@ -105,7 +128,7 @@ export function PaymentPanel({
         disabled={busy}
         className="w-full rounded-xl bg-accent px-4 py-3 font-semibold text-white disabled:opacity-40"
       >
-        {busy ? "Paying…" : `Retry ${retryMethod === "external" ? "card" : "cash"} payment`}
+        {busy ? "Paying…" : `Retry ${retryMethod === "cash" ? "cash" : "card"} payment`}
       </button>
     );
   }
@@ -155,6 +178,37 @@ export function PaymentPanel({
             Split {ways}
           </button>
         ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Tip">
+        <span className="text-sm text-muted">Tip</span>
+        <button type="button" onClick={() => setTipBp(0)} aria-pressed={tipBp === 0} className={chip(tipBp === 0)}>
+          None
+        </button>
+        {TIPS.map((bp) => (
+          <button
+            key={bp}
+            type="button"
+            onClick={() => setTipBp(bp)}
+            aria-pressed={tipBp === bp}
+            className={chip(tipBp === bp)}
+          >
+            {percentText(bp)}
+          </button>
+        ))}
+        <button type="button" onClick={() => setTipBp(null)} aria-pressed={tipBp === null} className={chip(tipBp === null)}>
+          $
+        </button>
+        {tipBp === null && (
+          <input
+            aria-label="Tip amount"
+            value={tipText}
+            onChange={(e) => setTipText(e.target.value)}
+            inputMode="decimal"
+            placeholder="0.00"
+            className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm tabular-nums"
+          />
+        )}
       </div>
 
       {error && <p className="text-sm text-red-700 dark:text-red-300">{error}</p>}
@@ -217,6 +271,19 @@ export function PaymentPanel({
           >
             Card on terminal
           </button>
+          {onStripe && (
+            <button
+              onClick={() => {
+                const cents = checkedAmount();
+                const tip = cents === null ? null : tipCents(cents);
+                if (cents !== null && tip !== null) onStripe(cents, tip);
+              }}
+              disabled={busy}
+              className="col-span-2 rounded-xl border border-accent px-4 py-3 font-semibold text-accent disabled:opacity-40"
+            >
+              Card on this screen (Stripe)
+            </button>
+          )}
         </div>
       )}
     </div>

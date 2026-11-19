@@ -77,7 +77,7 @@ jobs:
   venue-stack:
     # The self-host install as a venue runs it: build the images, start the stack, and
     # drive it end to end through the web proxy and the API.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright 1.51's Chromium supports up to 24.04
     needs: [python, web]
     steps:
       - uses: actions/checkout@v4
@@ -98,6 +98,26 @@ jobs:
         run: |
           set -a; . ./.env; set +a
           python scripts/smoke_test.py --api http://localhost:8000
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: End-to-end tests in a real browser against the stack
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          set -a; . ../.env; set +a
+          E2E_BASE_URL=http://localhost:3000 E2E_API_URL=http://localhost:8000             E2E_ADMIN_TOKEN="$VOIDPOS_ADMIN_TOKEN" npx playwright test
+      - name: End-to-end report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            web/e2e-report
+            web/test-results
       - name: The backup service wrote a dump
         run: |
           for i in $(seq 1 30); do ls backups/void_pos-*.dump >/dev/null 2>&1 && break; sleep 2; done

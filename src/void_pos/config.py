@@ -30,11 +30,20 @@ class Settings(BaseSettings):
     receipt_printer_port: int = Field(default=9100, ge=1, le=65535)
     receipt_printer_columns: int = Field(default=42, ge=24, le=64)  # 42 for 80 mm, 32 for 58 mm
 
+    # Stripe card payments on the till: SANDBOX keys only (sk_test_ / pk_test_). Unset = off.
+    stripe_secret_key: SecretStr | None = None
+    stripe_publishable_key: str | None = None
+    # Square: an access token, only to read the item library for the menu import.
+    square_access_token: SecretStr | None = None
+
     @field_validator(
         "admin_token",
         "kitchen_printer_host",
         "kitchen_font_path",
         "receipt_printer_host",
+        "stripe_secret_key",
+        "stripe_publishable_key",
+        "square_access_token",
         mode="before",
     )
     @classmethod
@@ -49,6 +58,24 @@ class Settings(BaseSettings):
                 f"VOIDPOS_ADMIN_TOKEN must be at least {MIN_ADMIN_TOKEN_LENGTH} characters"
             )
         return value
+
+    @field_validator("stripe_secret_key")
+    @classmethod
+    def _stripe_sandbox_only(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().startswith("sk_test_"):
+            raise ValueError("VOIDPOS_STRIPE_SECRET_KEY must be a sandbox key (sk_test_...)")
+        return value
+
+    @field_validator("stripe_publishable_key")
+    @classmethod
+    def _stripe_publishable_sandbox_only(cls, value: str | None) -> str | None:
+        if value is not None and not value.startswith("pk_test_"):
+            raise ValueError("VOIDPOS_STRIPE_PUBLISHABLE_KEY must be a sandbox key (pk_test_...)")
+        return value
+
+    @property
+    def stripe_enabled(self) -> bool:
+        return self.stripe_secret_key is not None and self.stripe_publishable_key is not None
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -65,7 +65,14 @@ The same setup is available over HTTP under `/admin` with
 
 ## Menu
 
-The quickest way in is a spreadsheet. Start from [menu-template.csv](menu-template.csv):
+Coming from Square? `void-pos import-square --location <id>` brings the item library
+over (items and sizes, prices, categories, GST, modifier sets) with an access token in
+`.env` (`VOIDPOS_SQUARE_ACCESS_TOKEN`); run it with `--dry-run` first, and again after a
+change in Square. Menus, staff, tills, venue details and sales can all be managed from the
+back office at `http://<venue machine>:3000/admin` with the admin token. For a live demo,
+see [showcase.md](showcase.md).
+
+Otherwise, the quickest way in is a spreadsheet. Start from [menu-template.csv](menu-template.csv):
 one row per item with `name` and `price` (in dollars), and optionally `category`,
 `kitchen_name` (any script), `tax_rate` (`10%` or `0.1`) and `is_available` (`yes`/`no`).
 In Excel use **Save As > CSV UTF-8** so Tamil and other scripts survive. Then:

@@ -17,16 +17,20 @@ from ..clock import as_aware
 from ..events.payloads import (
     CURRENCY_PATTERN,
     MAX_LINE_CENTS,
+    AdjustmentIn,
     OrderLineIn,
     OrderPlaced,
     check_line_tree,
 )
 from ..ids import Ulid
 from ..menu.service import TillMenu
-from ..models import Device, Location, MenuChange, OrderLine, Payment
+from ..models import Device, Location, MenuChange, OrderLine, Payment, Refund
 from ..orders.views import OrderView
 
 # --- till commands ----------------------------------------------------------------
+
+
+Pin = Annotated[str, StringConstraints(pattern=r"^[0-9]{4,8}$")]
 
 
 class CommandIn(BaseModel):
@@ -56,6 +60,7 @@ class OrderLineOut(BaseModel):
     seat_number: int | None
     course_number: int | None
     sent: bool  # the kitchen has it
+    removed: bool  # taken off the order; left out of every total
 
     @classmethod
     def of(cls, line: OrderLine) -> OrderLineOut:
@@ -73,6 +78,7 @@ class OrderLineOut(BaseModel):
             seat_number=line.seat_number,
             course_number=line.course_number,
             sent=line.sent_at is not None,
+            removed=line.removed_at is not None,
         )
 
 
@@ -80,7 +86,8 @@ class PaymentOut(BaseModel):
     payment_id: str
     provider: str
     external_ref: str | None
-    amount_cents: int
+    amount_cents: int  # toward the order
+    tip_cents: int
     currency: str
     status: str
 
@@ -91,8 +98,38 @@ class PaymentOut(BaseModel):
             provider=payment.provider,
             external_ref=payment.external_ref,
             amount_cents=payment.amount_cents,
+            tip_cents=payment.tip_cents,
             currency=payment.currency,
             status=payment.status,
+        )
+
+
+class AdjustmentOut(BaseModel):
+    id: str
+    kind: str
+    basis: str
+    value: int  # basis points (1000 = 10%), or cents
+    label: str | None
+    amount_cents: int  # what it comes to now: negative for a discount
+
+
+class RefundOut(BaseModel):
+    refund_id: str
+    payment_id: str
+    amount_cents: int
+    reason: str
+    provider: str
+    external_ref: str | None
+
+    @classmethod
+    def of(cls, refund: Refund) -> RefundOut:
+        return cls(
+            refund_id=refund.id,
+            payment_id=refund.payment_id,
+            amount_cents=refund.amount_cents,
+            reason=refund.reason,
+            provider=refund.provider,
+            external_ref=refund.external_ref,
         )
 
 
@@ -106,9 +143,12 @@ class OrderSummary(BaseModel):
     table_label: str | None
     business_date: date
     created_at: datetime
+    subtotal_cents: int  # the items, before discounts and surcharges
     total_cents: int
     gst_cents: int
     balance_cents: int
+    tips_cents: int
+    refunded_cents: int
     unsent_lines: int  # lines the kitchen hasn't had yet
 
     @classmethod
@@ -122,9 +162,12 @@ class OrderSummary(BaseModel):
             table_label=o.table_label,
             business_date=o.business_date,
             created_at=as_aware(o.created_at),
+            subtotal_cents=view.subtotal_cents,
             total_cents=view.total_cents,
             gst_cents=view.gst_cents,
             balance_cents=view.balance_cents,
+            tips_cents=view.tips_cents,
+            refunded_cents=view.refunded_cents,
             unsent_lines=view.unsent_lines,
         )
 
@@ -133,7 +176,9 @@ class OrderResponse(OrderSummary):
     """The whole order, as a till needs it to carry on with it."""
 
     lines: list[OrderLineOut]
+    adjustments: list[AdjustmentOut]
     payments: list[PaymentOut]
+    refunds: list[RefundOut]
     replayed: bool = False
 
     @classmethod
@@ -141,9 +186,46 @@ class OrderResponse(OrderSummary):
         return cls(
             **OrderSummary.of(view).model_dump(),
             lines=[OrderLineOut.of(line) for line in view.lines],
+            adjustments=[
+                AdjustmentOut(
+                    id=a.id,
+                    kind=a.kind,
+                    basis=a.basis,
+                    value=a.value,
+                    label=a.label,
+                    amount_cents=view.adjustment_cents.get(a.id, 0),
+                )
+                for a in view.adjustments
+            ],
             payments=[PaymentOut.of(p) for p in view.payments],
+            refunds=[RefundOut.of(r) for r in view.refunds],
             replayed=replayed,
         )
+
+
+class RemoveLinesRequest(CommandIn):
+    """Take items (with their modifiers) off an open order. An item the kitchen has needs
+    a manager's PIN once the venue has a manager."""
+
+    line_ids: list[Ulid] = Field(min_length=1, max_length=500)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    manager_pin: Pin | None = None
+
+
+class AdjustRequest(CommandIn, AdjustmentIn):
+    """A discount (needs a manager's PIN once the venue has one) or a surcharge. ``value``
+    is basis points for a percentage (1000 = 10%) or cents for an amount."""
+
+    manager_pin: Pin | None = None
+
+
+class RefundRequest(CommandIn):
+    refund_id: Ulid
+    payment_id: Ulid
+    amount_cents: int = Field(ge=1)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    external_ref: str | None = Field(default=None, min_length=1, max_length=200)  # terminal ref
+    manager_pin: Pin | None = None
 
 
 class AddLinesRequest(CommandIn):
@@ -170,7 +252,6 @@ class KitchenResponse(BaseModel):
     replayed: bool = False
 
 
-Pin = Annotated[str, StringConstraints(pattern=r"^[0-9]{4,8}$")]
 
 
 class VoidRequest(CommandIn):
@@ -185,17 +266,40 @@ class VoidResponse(BaseModel):
     replayed: bool = False
 
 
+class StripeIntentRequest(BaseModel):
+    """Start a card payment through Stripe: what will be charged (amount plus tip)."""
+
+    payment_id: Ulid  # the till's id for the payment it will record
+    amount_cents: int = Field(ge=1)
+    tip_cents: int = Field(default=0, ge=0, le=MAX_LINE_CENTS)
+
+
+class StripeIntentOut(BaseModel):
+    payment_intent_id: str
+    client_secret: str
+    publishable_key: str
+
+
+class StripeConfigOut(BaseModel):
+    enabled: bool
+    publishable_key: str | None
+
+
 class PayRequest(CommandIn):
     payment_id: Ulid
-    method: Literal["cash", "external"] = "cash"
+    method: Literal["cash", "external", "stripe"] = "cash"
+    stripe_payment_intent_id: str | None = Field(default=None, max_length=100)
     external_ref: str | None = Field(default=None, min_length=1, max_length=200)
     amount_cents: int | None = Field(default=None, ge=0)  # default: all that is owing
+    tip_cents: int = Field(default=0, ge=0, le=MAX_LINE_CENTS)  # on top of the amount
     currency: str = Field(default="AUD", pattern=CURRENCY_PATTERN)
 
     @model_validator(mode="after")
     def _external_needs_ref(self) -> PayRequest:
         if self.method == "external" and not self.external_ref:
             raise ValueError("external_ref is required for method 'external'")
+        if self.method == "stripe" and not self.stripe_payment_intent_id:
+            raise ValueError("stripe_payment_intent_id is required for method 'stripe'")
         return self
 
 
@@ -204,6 +308,7 @@ class PaymentResponse(BaseModel):
     payment_id: str
     provider: str
     amount_cents: int
+    tip_cents: int
     currency: str
     status: str
     order_state: str
@@ -502,6 +607,7 @@ class LocationOut(BaseModel):
     address: str | None = None
     phone: str | None = None
     receipt_footer: str | None = None
+    holiday_surcharge_bp: int | None = None  # 1500 = 15%
 
 
 class VenueDetailsIn(BaseModel):
@@ -513,6 +619,7 @@ class VenueDetailsIn(BaseModel):
     address: str | None = Field(default=None, max_length=300)
     phone: str | None = Field(default=None, max_length=40)
     receipt_footer: str | None = Field(default=None, max_length=300)
+    holiday_surcharge_bp: int | None = Field(default=None, ge=0, le=10_000)  # 0 clears it
 
 
 class ReceiptLineOut(BaseModel):
@@ -543,6 +650,9 @@ class ReceiptOut(BaseModel):
     gst_cents: int
     payments: list[ReceiptPaymentOut]
     balance_cents: int
+    subtotal_cents: int | None
+    adjustments: list[ReceiptLineOut]
+    refunds: list[ReceiptPaymentOut]
     voided: bool
     footer: str | None
 

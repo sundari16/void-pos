@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .provider import ChargeRequest, ChargeResult
+from .provider import ChargeRequest, ChargeResult, PaymentError, RefundRequest, RefundResult
 
 
 class CashProvider:
@@ -18,6 +18,9 @@ class CashProvider:
             currency=request.currency,
             status="captured",
         )
+
+    def refund(self, request: RefundRequest) -> RefundResult:
+        return RefundResult(external_ref=None)  # counted out of the till
 
 
 @dataclass
@@ -37,3 +40,9 @@ class ExternalProvider:
             currency=request.currency,
             status="captured",
         )
+
+    def refund(self, request: RefundRequest) -> RefundResult:
+        """Done on the venue's terminal; the cashier types its refund reference."""
+        if not self.external_ref:
+            raise PaymentError("type the terminal's refund reference")
+        return RefundResult(external_ref=self.external_ref)

@@ -10,7 +10,14 @@ from ..devices import get_location
 from ..errors import InvalidRequest
 from ..models import Location
 
-VENUE_FIELDS = ("business_name", "abn", "address", "phone", "receipt_footer")
+VENUE_FIELDS = (
+    "business_name",
+    "abn",
+    "address",
+    "phone",
+    "receipt_footer",
+    "holiday_surcharge_bp",
+)
 _WEIGHTS = (10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
 
 

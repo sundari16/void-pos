@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  adjustmentLabel,
   isUnsettled,
+  percentText,
+  refundable,
+  tipFor,
   placedItemCents,
   placedItems,
   sendLabel,
@@ -25,6 +29,7 @@ function line(id: string, price: number, qty = 1, parent: string | null = null, 
     seat_number: null,
     course_number: null,
     sent,
+    removed: false,
   };
 }
 
@@ -36,10 +41,15 @@ const order: OrderResponse = {
   table_label: "12",
   business_date: "2026-11-18",
   created_at: "2026-11-18T09:00:00Z",
+  subtotal_cents: 4800,
   total_cents: 4800,
   gst_cents: 436,
   balance_cents: 4800,
   unsent_lines: 2,
+  tips_cents: 0,
+  refunded_cents: 0,
+  adjustments: [],
+  refunds: [],
   lines: [
     line("dosa", 1850, 2, null, true),
     line("hot", 0, 1, "dosa", true),
@@ -87,6 +97,7 @@ describe("placed orders", () => {
       status: "captured",
       order_state: "sent",
       balance_cents: 4000,
+      tip_cents: 0,
       replayed: false,
     };
     const paid = withPayment(withPayment(order, payment), { ...payment, replayed: true });
@@ -95,5 +106,37 @@ describe("placed orders", () => {
     expect(isUnsettled(paid)).toBe(true);
     const voided = withVoid(order, { order_id: "o1", state: "voided", printed: false, replayed: false });
     expect(isUnsettled(voided)).toBe(false);
+  });
+});
+
+describe("adjustments, tips and refunds", () => {
+  it("leave lines taken off out of the ticket", () => {
+    const lines = order.lines.map((l) => (l.id === "naan" ? { ...l, removed: true } : l));
+    expect(placedItems(lines).map((i) => i.line.id)).toEqual(["dosa"]);
+  });
+
+  it("name adjustments and tips for people", () => {
+    expect(percentText(1000)).toBe("10%");
+    expect(percentText(1250)).toBe("12.5%");
+    const adj = { id: "a", kind: "surcharge", basis: "percent", value: 1500, label: null, amount_cents: 720 } as const;
+    expect(adjustmentLabel(adj)).toBe("Surcharge 15%");
+    expect(adjustmentLabel({ ...adj, label: "Public holiday" })).toBe("Public holiday");
+    expect(tipFor(4800, 1000)).toBe(480);
+    expect(tipFor(4805, 1500)).toBe(721);
+  });
+
+  it("know what is left to refund on each payment", () => {
+    const paid = {
+      ...order,
+      payments: [
+        { payment_id: "p1", provider: "cash", external_ref: null, amount_cents: 3000, tip_cents: 200, currency: "AUD", status: "captured" },
+        { payment_id: "p2", provider: "external", external_ref: "A1", amount_cents: 1800, tip_cents: 0, currency: "AUD", status: "captured" },
+      ],
+      refunds: [
+        { refund_id: "r1", payment_id: "p1", amount_cents: 500, reason: "x", provider: "cash", external_ref: null },
+        { refund_id: "r2", payment_id: "p2", amount_cents: 1800, reason: "x", provider: "external", external_ref: "R" },
+      ],
+    };
+    expect(refundable(paid).map((x) => [x.payment.payment_id, x.left])).toEqual([["p1", 2700]]);
   });
 });

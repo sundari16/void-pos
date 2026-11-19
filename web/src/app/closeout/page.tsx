@@ -106,8 +106,14 @@ export default function CloseoutPage() {
               {(
                 [
                   ["Sales (GST included)", report.paid_sales_cents],
+                  ["Discounts given", report.discounts_cents],
+                  ["Surcharges", report.surcharges_cents],
                   ["GST", report.gst_cents],
                   ["Sales ex GST", report.sales_ex_gst_cents],
+                  ["Refunds", report.refunds_cents],
+                  ["Net sales (after refunds)", report.net_sales_cents],
+                  ["Net GST (after refunds)", report.net_gst_cents],
+                  ["Tips (not sales)", report.tips_cents],
                   ["Still owing on open orders", report.open_balance_cents],
                 ] as const
               ).map(([label, cents]) => (
@@ -121,8 +127,8 @@ export default function CloseoutPage() {
 
           <section className="rounded-2xl border border-border bg-surface p-4">
             <h2 className="mb-3 text-sm font-semibold">Orders</h2>
-            <div className="grid grid-cols-5 gap-2 text-center">
-              {(["total", "open", "sent", "paid", "voided"] as const).map((k) => (
+            <div className="grid grid-cols-3 gap-2 text-center sm:grid-cols-6">
+              {(["total", "open", "sent", "paid", "voided", "refunded"] as const).map((k) => (
                 <div key={k} className="rounded-lg bg-background py-2">
                   <div className="text-lg font-semibold tabular-nums">{report.orders[k]}</div>
                   <div className="text-xs capitalize text-muted">{k}</div>

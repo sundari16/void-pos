@@ -68,12 +68,21 @@ def encode_receipt(
         else:
             label, amount = f"{line.quantity}x {line.name}", money(line.amount_cents)
         out += _row(label, amount, columns, rasterizer)
-    out += rule + BOLD_ON + _row("TOTAL", money(receipt.total_cents), columns, None) + BOLD_OFF
+    out += rule
+    if receipt.subtotal_cents is not None:
+        out += _row("Subtotal", money(receipt.subtotal_cents), columns, None)
+        for adj in receipt.adjustments:
+            out += _row(adj.name, money(adj.amount_cents), columns, rasterizer)
+    out += BOLD_ON + _row("TOTAL", money(receipt.total_cents), columns, None) + BOLD_OFF
     out += _row("Includes GST", money(receipt.gst_cents), columns, None)
     for payment in receipt.payments:
         out += _row(payment.label, money(payment.amount_cents), columns, None)
         if payment.reference:
             out += _render_line(f"  Ref {payment.reference}", rasterizer)
+    for refund in receipt.refunds:
+        out += _row(refund.label, money(refund.amount_cents), columns, None)
+        if refund.reference:
+            out += _render_line(f"  Ref {refund.reference}", rasterizer)
     if receipt.balance_cents and not receipt.voided:
         out += BOLD_ON + _row("Still owing", money(receipt.balance_cents), columns, None) + BOLD_OFF
     if receipt.footer:

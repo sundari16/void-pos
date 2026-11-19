@@ -140,12 +140,39 @@ of it), never more, and the order turns paid once captured payments cover the to
 projection applies the same rule to synced payments, so a split bill settles the same way
 online or offline. Order and payment responses carry `balance_cents`.
 
+A payment can carry a **tip** (`tip_cents`) on top of what it pays toward the order; tips
+are reported apart from sales. **Card payments through Stripe** (sandbox only; the server
+refuses live keys) are taken on the till's screen with Stripe's Payment Element: the till
+asks for a PaymentIntent (`POST /orders/{id}/stripe-intent`), the card goes from the
+browser straight to Stripe, and `POST /orders/{id}/pay` with method `stripe` records it
+only after Stripe confirms that intent succeeded for this order, payment and amount.
+
+### Changing a placed order, and giving money back
+
+- **Taking items off** (`POST /orders/{id}/remove-lines`, `order.lines_removed`): an
+  item and its modifiers leave every total, ticket and receipt but stay on record. One the
+  kitchen has needs a manager's PIN and prints a CANCEL ticket first. A quantity change is
+  take off and add again.
+- **Discounts and surcharges** (`POST /orders/{id}/adjustments`, `order.adjusted`; and
+  `.../remove`): a percentage or an amount on the whole order. Discounts (a manager's
+  PIN) come off the items' subtotal, never below zero; surcharges (the public-holiday
+  rate the venue sets) go on the discounted subtotal. GST follows each rate's share of
+  the final total.
+- **Refunds** (`POST /orders/{id}/refunds`, `order.refunded`): money back against one
+  payment of a paid order, through its own provider (cash, the card terminal with its
+  refund reference, or Stripe), with a manager's PIN; refunded in full, the order is
+  `refunded`.
+
+None of these can take an order below what's already been paid (`below_paid`), and
+events from sync follow the same rules, approval included.
+
 ### GST and receipts
 
 Menu prices include GST. A line at rate *r* carries *r* / (1 + *r*) of its price as GST;
 amounts are summed per rate and rounded once per rate, per order (`totals.gst_cents`), so
 each receipt and the closeout agree. The closeout reports paid sales, the GST in them,
-sales ex GST and what's still owing on the day's open orders.
+sales ex GST, discounts and surcharges, tips by provider, refunds by provider with their
+share of GST, net sales and net GST after refunds, and what's still owing on open orders.
 
 `GET /orders/{id}/receipt` builds the customer receipt (`receipts/`). With an ABN on the
 location it is an Australian tax invoice: the seller's name and ABN, the date, each item
@@ -234,6 +261,6 @@ not the previous UTC day's.
 - **Hosting.** GCP is deferred until the project is commercial. Moving there means a
   print agent on a venue device (the cloud can't reach a LAN printer) and per-org limits
   on top of the location scoping that already exists.
-- Refunds; changing or removing items already on a placed order (today: void and ring
-  it up again); order discounts, surcharges and tips; cash drawer counts; routing items
-  to more than one kitchen printer.
+- Cash drawer counts; routing items to more than one kitchen printer; detaching a
+  modifier group from an item, or deleting groups and modifiers, except by undoing the
+  change in the menu history.

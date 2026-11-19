@@ -29,7 +29,13 @@ from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from ..balance import balance_cents
+from ..balance import (
+    active_adjustments,
+    active_lines,
+    balance_cents,
+    captured_cents,
+    refunded_cents,
+)
 from ..clock import as_aware
 from ..models import (
     Customer,
@@ -41,13 +47,25 @@ from ..models import (
     Modifier,
     ModifierGroup,
     Order,
+    OrderAdjustment,
     OrderLine,
     Payment,
+    Refund,
     Staff,
 )
 from ..staff import managers_required
+from ..totals import Adjustment, order_math
 from .payloads import MAX_ORDER_LINES, PAYLOAD_SCHEMAS
-from .types import OPEN, PAID, SENT, VOIDED, EventType, can_transition
+from .types import (
+    OPEN,
+    PAID,
+    REFUNDED,
+    SENT,
+    UNSETTLED,
+    VOIDED,
+    EventType,
+    can_transition,
+)
 
 
 @dataclass
@@ -146,15 +164,16 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
             return reject(
                 "order_number_used", f"order number {number} is already used by this device"
             )
-    elif event_type in (
-        EventType.ORDER_SENT,
-        EventType.ORDER_VOIDED,
-        EventType.ORDER_PAID,
-        EventType.ORDER_LINES_ADDED,
-    ):
+    elif event_type in _ORDER_EVENTS:
         order = session.get(Order, payload["order_id"])
         if order is not None and order.location_id != location_id:
             return reject("foreign_order", "the order belongs to another location")
+        if event_type in _CHANGES and order is not None:
+            problem = _change_problem(session, order, event_type, payload)
+            if problem is not None:
+                return reject(*problem)
+        if event_type in _CHANGES and order is None:
+            return reject("unknown_order", "the order isn't here yet; send its order.placed first")
         if event_type == EventType.ORDER_LINES_ADDED:
             if order is None:
                 return reject(
@@ -186,12 +205,100 @@ def _validate(session: Session, incoming: dict[str, Any]) -> ApplyResult | None:
     return None
 
 
+_CHANGES = (
+    EventType.ORDER_LINES_REMOVED,
+    EventType.ORDER_ADJUSTED,
+    EventType.ORDER_ADJUSTMENT_REMOVED,
+    EventType.ORDER_REFUNDED,
+)
+_ORDER_EVENTS = (
+    EventType.ORDER_SENT,
+    EventType.ORDER_VOIDED,
+    EventType.ORDER_PAID,
+    EventType.ORDER_LINES_ADDED,
+    *_CHANGES,
+)
+
+
+def _change_problem(
+    session: Session, order: Order, event_type: str, payload: dict[str, Any]
+) -> tuple[str, str] | None:
+    """Why an item removal, adjustment or refund can't be recorded, as (code, detail)."""
+    location_id = order.location_id
+    lines = active_lines(session, order.id)
+    adjustments: list[Adjustment] = list(active_adjustments(session, order.id))
+    needs_approval = False
+
+    if event_type == EventType.ORDER_LINES_REMOVED:
+        by_id = {line.id: line for line in lines}
+        for line_id in payload["line_ids"]:
+            line = by_id.get(line_id)
+            if line is None or line.parent_line_id is not None:
+                return "unknown_line", f"line {line_id} isn't an item on this order"
+        gone = set(payload["line_ids"])
+        lines = [x for x in lines if x.id not in gone and x.parent_line_id not in gone]
+        needs_approval = any(by_id[i].sent_at is not None for i in gone)
+    elif event_type == EventType.ORDER_ADJUSTED:
+        adj = payload["adjustment"]
+        if session.get(OrderAdjustment, adj["id"]) is not None:
+            return "adjustment_exists", "an adjustment with this id already exists"
+        adjustments = [*adjustments, _NewAdjustment(**{k: adj[k] for k in _ADJ_KEYS})]
+        needs_approval = adj["kind"] == "discount"
+    elif event_type == EventType.ORDER_ADJUSTMENT_REMOVED:
+        before = len(adjustments)
+        adjustments = [a for a in adjustments if a.id != payload["adjustment_id"]]
+        if len(adjustments) == before:
+            return "unknown_adjustment", "that adjustment isn't on this order"
+    else:  # refund
+        refund = payload["refund"]
+        if session.get(Refund, refund["id"]) is not None:
+            return "refund_exists", "a refund with this id already exists"
+        if order.state != PAID:
+            return "order_not_paid", "only a paid order can be refunded"
+        payment = session.get(Payment, refund["payment_id"])
+        if payment is None or payment.order_id != order.id or payment.status != "captured":
+            return "unknown_payment", "that payment isn't a captured payment on this order"
+        if refund["provider"] != payment.provider:
+            return "wrong_refund_method", f"refund a {payment.provider} payment the same way"
+        given = session.scalar(
+            select(func.coalesce(func.sum(Refund.amount_cents), 0)).where(
+                Refund.payment_id == payment.id
+            )
+        )
+        left = payment.amount_cents + payment.tip_cents - int(given or 0)
+        if refund["amount_cents"] > left:
+            return "refund_exceeds_payment", f"only {left} cents of that payment is left to refund"
+        needs_approval = True
+
+    if event_type != EventType.ORDER_REFUNDED:
+        new_total = order_math(lines, adjustments).total_cents
+        if new_total < captured_cents(session, order.id):
+            return "below_paid", "that would take the order below what's already been paid"
+    if needs_approval:
+        refusal = _approval_refusal(session, location_id, payload)
+        if refusal is not None:
+            return "manager_approval_required", refusal
+    return None
+
+
+_ADJ_KEYS = ("id", "kind", "basis", "value")
+
+
+@dataclass(frozen=True)
+class _NewAdjustment:
+    id: str
+    kind: str
+    basis: str
+    value: int
+
+
 def _approval_refusal(
     session: Session, location_id: str, payload: dict[str, Any]
 ) -> str | None:
-    """Once a location has a manager, a void must name an active manager there, by id and
-    name, whichever path it came by. The online path names the manager whose PIN it
-    checked; an event from sync can't name one it doesn't know."""
+    """Once a location has a manager, a change that needs approval (a void, a refund, a
+    discount, taking off an item the kitchen has) must name an active manager there, by
+    id and name, whichever path it came by. The online path names the manager whose PIN
+    it checked; an event from sync can't name one it doesn't know."""
     if not managers_required(session, location_id):
         return None
     manager = session.get(Staff, payload.get("approved_by") or "")
@@ -202,7 +309,7 @@ def _approval_refusal(
         or not manager.active
         or manager.name != payload.get("approved_by_name")
     ):
-        return "a void here needs a manager's approval"
+        return "this needs a manager's approval"
     return None
 
 
@@ -273,7 +380,7 @@ def _h_order_lines_added(session: Session, event: Event) -> ApplyResult:
     order = session.get(Order, event.payload["order_id"])
     if order is None:
         return ApplyResult(event.event_id, "ignored", "order not found")
-    if order.state in (PAID, VOIDED):
+    if order.state not in UNSETTLED:
         return ApplyResult(event.event_id, "conflict", f"can't add to a {order.state} order")
     _add_lines(session, event, order.id, event.payload["lines"])
     return ApplyResult(event.event_id, "applied")
@@ -300,7 +407,11 @@ def _h_order_sent(session: Session, event: Event) -> ApplyResult:
         return ApplyResult(event.event_id, "ignored", "order not found")
     if order.state == VOIDED:
         return ApplyResult(event.event_id, "conflict", "voided -> sent not allowed")
-    stmt = select(OrderLine).where(OrderLine.order_id == order.id, OrderLine.sent_at.is_(None))
+    stmt = select(OrderLine).where(
+        OrderLine.order_id == order.id,
+        OrderLine.sent_at.is_(None),
+        OrderLine.removed_at.is_(None),
+    )
     line_ids = event.payload.get("line_ids")
     if line_ids is not None:
         stmt = stmt.where(OrderLine.id.in_(line_ids))
@@ -338,6 +449,7 @@ def _h_order_paid(session: Session, event: Event) -> ApplyResult:
                 provider=pay["provider"],
                 external_ref=pay.get("external_ref"),
                 amount_cents=pay["amount_cents"],
+                tip_cents=pay.get("tip_cents", 0),
                 currency=pay.get("currency", "AUD"),
                 status=pay.get("status", "captured"),
             )
@@ -353,6 +465,101 @@ def _h_order_paid(session: Session, event: Event) -> ApplyResult:
         if owing > 0:
             return ApplyResult(event.event_id, "applied", f"part payment; {owing} cents owing")
     order.state = PAID
+    return ApplyResult(event.event_id, "applied")
+
+
+def _unsettled_order(session: Session, event: Event) -> Order | ApplyResult:
+    order = session.get(Order, event.payload["order_id"])
+    if order is None:
+        return ApplyResult(event.event_id, "ignored", "order not found")
+    if order.state not in UNSETTLED:
+        return ApplyResult(event.event_id, "conflict", f"can't change a {order.state} order")
+    return order
+
+
+def _settled(session: Session, event: Event, order: Order) -> ApplyResult:
+    """After taking items off or changing adjustments: if what's been paid now covers the
+    order, it's paid (a $0 order with nothing paid stays open, to add to or void)."""
+    session.flush()
+    if captured_cents(session, order.id) > 0 and balance_cents(session, order.id) == 0:
+        order.state = PAID
+        return ApplyResult(event.event_id, "applied", "now paid in full")
+    return ApplyResult(event.event_id, "applied")
+
+
+def _h_order_lines_removed(session: Session, event: Event) -> ApplyResult:
+    order = _unsettled_order(session, event)
+    if isinstance(order, ApplyResult):
+        return order
+    gone = set(event.payload["line_ids"])
+    for line in session.scalars(
+        select(OrderLine).where(
+            OrderLine.order_id == order.id,
+            OrderLine.removed_at.is_(None),
+            (OrderLine.id.in_(gone)) | (OrderLine.parent_line_id.in_(gone)),
+        )
+    ):
+        line.removed_at = _utc(event.occurred_at)
+    return _settled(session, event, order)
+
+
+def _h_order_adjusted(session: Session, event: Event) -> ApplyResult:
+    order = _unsettled_order(session, event)
+    if isinstance(order, ApplyResult):
+        return order
+    adj = event.payload["adjustment"]
+    session.add(
+        OrderAdjustment(
+            id=adj["id"],
+            order_id=order.id,
+            kind=adj["kind"],
+            basis=adj["basis"],
+            value=adj["value"],
+            label=adj.get("label"),
+            approved_by=event.payload.get("approved_by"),
+        )
+    )
+    return _settled(session, event, order)
+
+
+def _h_order_adjustment_removed(session: Session, event: Event) -> ApplyResult:
+    order = _unsettled_order(session, event)
+    if isinstance(order, ApplyResult):
+        return order
+    adj = session.get(OrderAdjustment, event.payload["adjustment_id"])
+    if adj is None or adj.removed_at is not None:
+        return ApplyResult(event.event_id, "duplicate", "adjustment already removed")
+    adj.removed_at = _utc(event.occurred_at)
+    return _settled(session, event, order)
+
+
+def _h_order_refunded(session: Session, event: Event) -> ApplyResult:
+    order = session.get(Order, event.payload["order_id"])
+    if order is None:
+        return ApplyResult(event.event_id, "ignored", "order not found")
+    r = event.payload["refund"]
+    session.add(
+        Refund(
+            id=r["id"],
+            order_id=order.id,
+            payment_id=r["payment_id"],
+            location_id=event.location_id,
+            business_date=event.business_date,
+            amount_cents=r["amount_cents"],
+            reason=r["reason"],
+            provider=r["provider"],
+            external_ref=r.get("external_ref"),
+            approved_by=event.payload.get("approved_by"),
+        )
+    )
+    session.flush()
+    taken = session.scalar(
+        select(func.coalesce(func.sum(Payment.amount_cents + Payment.tip_cents), 0)).where(
+            Payment.order_id == order.id, Payment.status == "captured"
+        )
+    )
+    if order.state == PAID and refunded_cents(session, order.id) >= int(taken or 0):
+        order.state = REFUNDED
     return ApplyResult(event.event_id, "applied")
 
 
@@ -380,6 +587,10 @@ _HANDLERS: dict[str, Callable[[Session, Event], ApplyResult]] = {
     EventType.ORDER_PAID: _h_order_paid,
     EventType.ORDER_VOIDED: _h_order_voided,
     EventType.ORDER_LINES_ADDED: _h_order_lines_added,
+    EventType.ORDER_LINES_REMOVED: _h_order_lines_removed,
+    EventType.ORDER_ADJUSTED: _h_order_adjusted,
+    EventType.ORDER_ADJUSTMENT_REMOVED: _h_order_adjustment_removed,
+    EventType.ORDER_REFUNDED: _h_order_refunded,
     EventType.LOYALTY_RECORDED: _h_loyalty_recorded,
 }
 
