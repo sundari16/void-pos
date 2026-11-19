@@ -40,6 +40,7 @@ a socket straight to the kitchen printer.
 | `src/void_pos/sync/` | Device push and cursor pull, scoped to a location |
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
 | `src/void_pos/menu/` | Catalog: items, modifier groups (min/max choices) and modifiers, daily availability windows (`availability.py`), the till's whole-menu read, spreadsheet imports for items and modifiers; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
+| `src/void_pos/voice/` | Voice AI order intake: resolve a spoken order against the live menu, confirm it (read-back), and place it on the `voice` channel through `place_order`. `agent.py` is the seam the external voice stack (`livekit-impl` / `cold-caller`) plugs into; the telephony/LLM is out of this repo. See [voice-ordering.md](voice-ordering.md) |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |

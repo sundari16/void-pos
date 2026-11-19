@@ -7,5 +7,13 @@ from .device_routes import router as device_router
 from .errors import install_error_handlers
 from .menu_routes import router as menu_router
 from .routes import router
+from .voice_routes import router as voice_router
 
-__all__ = ["admin_router", "device_router", "install_error_handlers", "menu_router", "router"]
+__all__ = [
+    "admin_router",
+    "device_router",
+    "install_error_handlers",
+    "menu_router",
+    "router",
+    "voice_router",
+]
