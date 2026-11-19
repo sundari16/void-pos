@@ -33,6 +33,8 @@ export interface VenueDetailsIn {
   address: string;
   phone: string;
   receipt_footer: string;
+  /** The public-holiday surcharge the tills offer, in basis points (1500 = 15%); 0 clears. */
+  holiday_surcharge_bp?: number;
 }
 
 /** POST /locations/{id}/menu/items. Times are local, "HH:MM". */

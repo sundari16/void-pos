@@ -30,6 +30,9 @@ export default function VenuePage() {
   const { api, location } = useAdminLocation();
   const { updateLocation } = useAdmin();
   const [form, setForm] = useState<VenueDetailsIn>(() => formFrom(location));
+  const [surcharge, setSurcharge] = useState(() =>
+    location.holiday_surcharge_bp ? String(location.holiday_surcharge_bp / 100) : "",
+  );
   const [abnError, setAbnError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -48,8 +51,17 @@ export default function VenuePage() {
     setError(null);
     setAbnError(null);
     setSaved(false);
+    const percent = surcharge.trim() === "" ? 0 : Number(surcharge);
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      setError("The holiday surcharge is a percentage from 0 to 100, e.g. 15.");
+      setBusy(false);
+      return;
+    }
     try {
-      const next = await api.updateVenue(location.id, form);
+      const next = await api.updateVenue(location.id, {
+        ...form,
+        holiday_surcharge_bp: Math.round(percent * 100),
+      });
       updateLocation(next);
       setForm(formFrom(next));
       setSaved(true);
@@ -127,6 +139,24 @@ export default function VenuePage() {
               onChange={(e) => set("receipt_footer", e.target.value)}
               maxLength={300}
               rows={2}
+              className={inputClass}
+            />
+          </Field>
+
+          <Field
+            label="Public-holiday surcharge (%)"
+            htmlFor={`${uid}-surcharge`}
+            hint="The tills offer it as one button on a public holiday. Leave blank for none."
+          >
+            <input
+              id={`${uid}-surcharge`}
+              value={surcharge}
+              onChange={(e) => {
+                setSaved(false);
+                setSurcharge(e.target.value);
+              }}
+              inputMode="decimal"
+              placeholder="15"
               className={inputClass}
             />
           </Field>
