@@ -138,6 +138,79 @@ A thermal receipt printer at the counter is optional. Set `VOIDPOS_RECEIPT_PRINT
 (and `VOIDPOS_RECEIPT_PRINTER_COLUMNS=32` for 58 mm paper) in `.env`; without one, the
 till's **Receipt** button shows the receipt to print from the tablet.
 
+## Rostering, time-clocking and timesheets
+
+Plan who is on, record who actually worked, and turn the two into approved timesheets — one
+per staff member per trading day. Times are the venue's local time; the business date is the
+venue's own trading day, so a shift that runs past midnight still lands on the right day.
+
+Roster a shift, then clock people on and off (a break is recorded as unpaid minutes):
+
+```bash
+docker compose exec api void-pos roster-add --location <id> --staff <staff id> \
+  --start "2026-11-20 09:00" --end "2026-11-20 17:00" --role kitchen
+docker compose exec api void-pos clock-in  --location <id> --staff <staff id>
+docker compose exec api void-pos clock-out --location <id> --staff <staff id> --break 30
+```
+
+`roster-list` and (after clocking off) `timesheet-build` show the day. A timesheet totals
+attendance minus breaks into the paid hours; a manager approves it with their PIN, after
+which it is frozen:
+
+```bash
+docker compose exec api void-pos timesheet-build --location <id> --date 2026-11-20
+docker compose exec api void-pos timesheet-list  --location <id> --date 2026-11-20
+docker compose exec api void-pos timesheet-approve --timesheet <timesheet id>
+```
+
+A day with anyone still clocked on can't be approved, and an approved timesheet can't be
+rebuilt. `clock-in`/`clock-out` and `roster-add` take an optional `--at`/`--start`/`--end`
+in local time (`YYYY-MM-DD HH:MM`); without `--at`, the clock uses now.
+
+### Deputy
+
+If the venue already rosters and runs payroll in [Deputy](https://www.deputy.com), Void POS
+syncs with the venue's **own** Deputy install — no middleman, the token is only ever sent to
+the venue's Deputy endpoint. Set both in `.env` (a permanent token from that Deputy install):
+
+```
+VOIDPOS_DEPUTY_ENDPOINT=https://mycompany.au.deputy.com
+VOIDPOS_DEPUTY_ACCESS_TOKEN=<permanent token>
+```
+
+Deputy employees are matched to Void POS staff **by name** (case-insensitive), the same way
+the Square import matches menu items — so add each person with the same name they have in
+Deputy. `deputy-connect` checks the token and shows who matches:
+
+```bash
+docker compose exec api void-pos deputy-connect --location <id>
+```
+
+Two directions, run either or both:
+
+- **Pull the roster in** (the default) — the manager builds the week's roster in Deputy, and
+  this reads it into the POS's scheduled shifts. Read-only, idempotent (a Deputy roster maps
+  to one shift, so re-pulling updates in place, never duplicates). This is the recommended
+  starting point — it is the direct mirror of the Square import and needs the least trust.
+
+  ```bash
+  docker compose exec api void-pos deputy-sync --location <id> --from 2026-11-20 --to 2026-11-26 --dry-run
+  docker compose exec api void-pos deputy-sync --location <id> --from 2026-11-20 --to 2026-11-26
+  ```
+
+- **Push approved timesheets out** (`--push`) — the clock-on/off and the manager's approval
+  happen here, at the venue, which Deputy can't see; this posts approved timesheets back to
+  Deputy for payroll. Idempotent: a timesheet is pushed once and then marked, so re-running
+  pushes nothing already sent. A dry run never writes to Deputy.
+
+  ```bash
+  docker compose exec api void-pos deputy-sync --location <id> --push --dry-run
+  docker compose exec api void-pos deputy-sync --location <id> --push
+  ```
+
+Anyone a sync can't match by name is reported and skipped, never guessed. Run `--dry-run`
+first either way.
+
 ## Kitchen printer
 
 Network ESC/POS printers listen on port 9100. Set its address in `.env` and restart:

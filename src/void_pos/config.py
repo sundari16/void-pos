@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     stripe_publishable_key: str | None = None
     # Square: an access token, only to read the item library for the menu import.
     square_access_token: SecretStr | None = None
+    # Deputy: the venue's own Deputy install (rostering + timesheets). The endpoint is the
+    # install's base URL (e.g. https://mycompany.au.deputy.com); the token is a permanent
+    # token from that install. Unset = the Deputy sync commands are off.
+    deputy_endpoint: str | None = None
+    deputy_access_token: SecretStr | None = None
 
     @field_validator(
         "admin_token",
@@ -44,6 +49,8 @@ class Settings(BaseSettings):
         "stripe_secret_key",
         "stripe_publishable_key",
         "square_access_token",
+        "deputy_endpoint",
+        "deputy_access_token",
         mode="before",
     )
     @classmethod
@@ -76,6 +83,10 @@ class Settings(BaseSettings):
     @property
     def stripe_enabled(self) -> bool:
         return self.stripe_secret_key is not None and self.stripe_publishable_key is not None
+
+    @property
+    def deputy_enabled(self) -> bool:
+        return self.deputy_endpoint is not None and self.deputy_access_token is not None
 
     @property
     def cors_origin_list(self) -> list[str]:
