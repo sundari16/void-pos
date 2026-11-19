@@ -81,6 +81,24 @@ If the API isn't on `http://localhost:8000`, set `VOIDPOS_API_URL` in `web/.env.
    the location's timezone: money taken, sales and GST, what's still owing, order counts,
    payments by provider, revenue by class.
 
+## Customer storefront (`/order`)
+
+A separate, customer-facing app under `/order/<location id>` — no till pairing, no token.
+A customer browses the location's live menu (the same `GET` the till uses, served publicly
+at `GET /online/locations/{id}`), builds an order with modifiers, gives their name and a
+phone or email, chooses pickup or delivery (with an address), optionally redeems loyalty
+points, and either pays by card (the same Stripe card form the till uses) or pays at pickup.
+
+The order is placed on the **`web` channel** into the *same* order pipeline as the tills
+(`POST /online/locations/{id}/orders`), so it shows up in Open orders and the kitchen like
+any other. The storefront mints the order id, so a double-tap or a dropped connection
+replays rather than placing twice. A returning customer is remembered in this browser
+(`src/lib/online/store.ts`) so their points and details come back; the server still
+re-matches them by phone/email and is the source of truth. Pure logic (the API client,
+redeem maths, the remembered-customer store) is unit tested under `src/lib/online`.
+
+`NEXT_PUBLIC_DEFAULT_LOCATION` makes bare `/order` redirect to one location's storefront.
+
 ## Retries are safe
 
 Every action mints its ids on the till (ULIDs for the order, its lines, the event and the
@@ -95,7 +113,7 @@ twice. See `src/lib/commands.ts`.
 - `npm run build` / `npm run start` — production build and serve
 - `npm run typecheck` — `tsc --noEmit`
 - `npm test` — unit tests (vitest) for ids, till counters, retries, the API client, the menu
-  rules and orders
+  rules and orders, and the storefront libs (`src/lib/online`)
 
 ## Known gaps
 

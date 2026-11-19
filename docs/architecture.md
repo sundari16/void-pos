@@ -40,10 +40,14 @@ a socket straight to the kitchen printer.
 | `src/void_pos/sync/` | Device push and cursor pull, scoped to a location |
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
 | `src/void_pos/menu/` | Catalog: items, modifier groups (min/max choices) and modifiers, daily availability windows (`availability.py`), the till's whole-menu read, spreadsheet imports for items and modifiers; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
+| `src/void_pos/online/` | The customer storefront write path: a per-location server-side "web device" drives `place_order`/`pay_order`, so web orders land in the same pipeline. Public `/online/*` API (no token) |
+| `src/void_pos/crm/` | Customer records: find-or-create (match by phone then email), order history |
+| `src/void_pos/loyalty/` | Earn/redeem on the loyalty ledger (balance is `SUM(points_delta)`); redemption is a non-cash tender via a `LoyaltyProvider` |
+| `src/void_pos/marketing/` | Campaign send seam: a `Sender` protocol + no-op `LogSender` in the open core; config-driven Twilio/SendGrid adapters mirror the payments provider seam |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |
-| `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested) |
+| `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested); `web/src/lib/online/` is the storefront client, redeem maths and remembered-customer store |
 
 ## The write path
 
@@ -242,6 +246,25 @@ menu. Two tabs of one till share counters through local storage.
 Money is integer cents (AUD by default). Timestamps are stored in UTC. Business dates follow
 the location's timezone, so an order rung up at 8am in Brisbane is on that day's closeout,
 not the previous UTC day's.
+
+## Online ordering, CRM, loyalty and marketing
+
+The customer storefront is not a second pipeline — it is a second *client* of the one write
+path. Every order needs a device (for the order-number range and the per-device sequence
+that make writes idempotent), so each location gets one server-side **web device** with its
+own reserved high number band (`src/void_pos/online/device.py`). The public `/online/*` API
+(no token) drives that device through the same `place_order` / `pay_order` as a till, so a
+`web` order is validated against the live menu, lands in Open orders, and prints in the
+kitchen like any other. It is idempotent on the browser-minted `order_id`.
+
+A **customer** is captured on the order (`crm`: match by phone then email within the org) —
+reference data like the menu, not an event. **Loyalty** earns and redeems on the ledger
+(`loyalty`): the balance is `SUM(points_delta)`, and a redemption is recorded both as a
+ledger debit and as a non-cash **tender** (a `LoyaltyProvider` payment), so it flows through
+`pay_order` and reduces the balance without a special discount path. **Marketing** (`marketing`)
+is a `Sender` seam with a no-op `LogSender` in the open core and config-driven Twilio/SendGrid
+adapters — the same shape as the payments provider seam, keeping real providers optional and
+out of the write path. Campaigns only ever reach customers who opted in.
 
 ## Delivery
 

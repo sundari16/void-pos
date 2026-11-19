@@ -8,6 +8,7 @@
     void-pos import-square --location <id> [--dry-run]   (VOIDPOS_SQUARE_ACCESS_TOKEN)
     void-pos add-staff --location <id> --name "Asha" --role manager   (asks for the PIN)
     void-pos venue-details --location <id> --abn "51 824 753 556" --address "..."
+    void-pos send-campaign --location <id> --channel sms --body "Hi {name}!" [--dry-run]
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
