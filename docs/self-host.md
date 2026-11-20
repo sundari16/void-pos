@@ -271,6 +271,8 @@ those glyphs in `./fonts` (for example `NotoSansTamil-Regular.ttf` from Google F
 ## Go-live checklist
 
 Run through this the day before the first service (the Madras Curry House pilot uses it).
+For the full feature-by-feature pass, automated and on site, see
+[venue-e2e-test-plan.md](venue-e2e-test-plan.md).
 
 1. **Machine:** always on, on the same network as the tablets and printer, with a fixed
    address (a DHCP reservation on the router). Power settings never sleep it.

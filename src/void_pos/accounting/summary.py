@@ -187,8 +187,8 @@ def build_daily_takings(closeout: dict[str, Any], account_map: AccountMap) -> Da
     if int(closeout.get("open_balance_cents", 0)):
         issues.append(
             "the day has unsettled orders (open balance "
-            f"{_dollars(int(closeout['open_balance_cents']))}); the rounding line absorbs the "
-            "difference — settle them before pushing for an exact split"
+            f"{_dollars(int(closeout['open_balance_cents']))}); they aren't in this invoice, and "
+            "any part-payment on them lands on the rounding line — settle them before pushing"
         )
 
     return DailyTakings(

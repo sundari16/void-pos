@@ -25,6 +25,9 @@ services:
   api:
     build: .
     restart: unless-stopped
+    # Every setting in .env reaches the API (loyalty, marketing, aggregators, delivery,
+    # Deputy, Xero, ...); the entries under `environment` take precedence over it.
+    env_file: .env
     depends_on:
       db:
         condition: service_healthy

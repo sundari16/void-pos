@@ -88,8 +88,14 @@ jobs:
         run: |
           echo "POSTGRES_PASSWORD=$(python -c 'import secrets; print(secrets.token_hex(16))')" >> .env
           echo "VOIDPOS_ADMIN_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" >> .env
+          echo "VOIDPOS_AGGREGATOR_WEBHOOK_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(24))')" >> .env
       - name: Build and start
         run: docker compose up -d --build --wait --wait-timeout 300
+      - name: Settings in .env reach the API (a set webhook secret means 403, not 503 "off")
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -H 'X-Void-Aggregator-Secret: wrong' -d '{}' http://localhost:8000/aggregators/mock/locations/x/orders)
+          test "$code" = 403 || { echo "wanted 403, got $code"; exit 1; }
       - name: Smoke test through the web till's /api proxy
         run: |
           set -a; . ./.env; set +a
