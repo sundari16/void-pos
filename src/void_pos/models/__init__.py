@@ -13,12 +13,14 @@ from .loyalty import LoyaltyLedger
 from .order import Order, OrderAdjustment, OrderLine
 from .org import Device, Location, Org, Staff
 from .payment import Payment, Refund
+from .rostering import ClockEntry, RosteredShift, Timesheet
 
 __all__ = [
     "ACCEPTED",
     "REJECTED",
     "AggregatorOrder",
     "Base",
+    "ClockEntry",
     "Customer",
     "Delivery",
     "Device",
@@ -38,6 +40,8 @@ __all__ = [
     "Org",
     "Payment",
     "Refund",
+    "RosteredShift",
     "Staff",
     "SyncCounter",
+    "Timesheet",
 ]

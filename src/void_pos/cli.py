@@ -13,6 +13,12 @@
     void-pos aggregator-sync-menu --location <id> [--provider mock]
     void-pos delivery-dispatch --location <id> --order <id> --name "..." --phone "..." --address "..."
     void-pos delivery-status --delivery <id> --status picked_up
+    void-pos roster-add --location <id> --staff <id> --start "2026-11-20 09:00" --end "..."
+    void-pos clock-in --location <id> --staff <id>      (and clock-out --break 30)
+    void-pos timesheet-build --location <id> --date 2026-11-20
+    void-pos timesheet-approve --timesheet <id>         (asks for a manager's PIN)
+    void-pos deputy-connect --location <id>             (VOIDPOS_DEPUTY_*)
+    void-pos deputy-sync --location <id> [--dry-run]    (pull roster; --push sends timesheets)
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -26,7 +32,7 @@ import getpass
 import json
 import sys
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -41,7 +47,7 @@ from .aggregators import (
     reject_order,
     sync_menu_out,
 )
-from .clock import local_date
+from .clock import as_aware, local_date
 from .config import settings
 from .delivery import (
     DeliveryParty,
@@ -78,7 +84,20 @@ from .printing import (
     needs_image,
 )
 from .receipts import format_abn, update_venue
-from .staff import create_staff, deactivate_staff, list_staff
+from .rostering import (
+    DeputyClient,
+    approve_timesheet,
+    build_timesheets_for_date,
+    clock_in,
+    clock_out,
+    list_shifts,
+    list_timesheets,
+    match_employees,
+    pull_roster,
+    push_timesheets,
+    schedule_shift,
+)
+from .staff import create_staff, deactivate_staff, get_staff, list_staff
 
 TEST_LINES = ("Print test", "மசாலா தோசை")  # Masala Dosa in Tamil: checks the font path
 
@@ -212,6 +231,62 @@ def build_parser() -> argparse.ArgumentParser:
     dstat.add_argument("--courier", help="the courier's name, once assigned")
     dstat.add_argument("--tracking", help="a live tracking URL")
     dstat.add_argument("--fee-cents", type=int, help="the courier fee, in cents")
+
+    radd = sub.add_parser("roster-add", help="roster a staff member on for a shift")
+    radd.add_argument("--location", required=True)
+    radd.add_argument("--staff", required=True, help="staff id")
+    radd.add_argument("--start", required=True, help="local time, YYYY-MM-DD HH:MM")
+    radd.add_argument("--end", required=True, help="local time, YYYY-MM-DD HH:MM")
+    radd.add_argument("--role", help="what they're on, e.g. kitchen or front")
+
+    rls = sub.add_parser("roster-list", help="list rostered shifts")
+    rls.add_argument("--location", required=True)
+    rls.add_argument("--date", help="a business date, YYYY-MM-DD (default: all)")
+
+    cin = sub.add_parser("clock-in", help="clock a staff member on")
+    cin.add_argument("--location", required=True)
+    cin.add_argument("--staff", required=True, help="staff id")
+    cin.add_argument("--at", help="local time, YYYY-MM-DD HH:MM (default: now)")
+
+    cout = sub.add_parser("clock-out", help="clock a staff member off")
+    cout.add_argument("--location", required=True)
+    cout.add_argument("--staff", required=True, help="staff id")
+    cout.add_argument("--at", help="local time, YYYY-MM-DD HH:MM (default: now)")
+    cout.add_argument(
+        "--break", dest="break_minutes", type=int, default=0, help="unpaid break minutes"
+    )
+
+    tsb = sub.add_parser(
+        "timesheet-build", help="build draft timesheets for a day from roster + clock data"
+    )
+    tsb.add_argument("--location", required=True)
+    tsb.add_argument("--date", help="a business date, YYYY-MM-DD (default: today)")
+
+    tsa = sub.add_parser(
+        "timesheet-approve", help="approve a timesheet (asks for a manager's PIN)"
+    )
+    tsa.add_argument("--timesheet", required=True, help="timesheet id")
+
+    tsl = sub.add_parser("timesheet-list", help="list timesheets")
+    tsl.add_argument("--location", required=True)
+    tsl.add_argument("--date", help="a business date, YYYY-MM-DD (default: all)")
+    tsl.add_argument("--status", choices=("draft", "approved"), help="only this status")
+
+    dcon = sub.add_parser(
+        "deputy-connect", help="check the Deputy token and show how employees match staff"
+    )
+    dcon.add_argument("--location", required=True)
+
+    dsync = sub.add_parser(
+        "deputy-sync",
+        help="pull the Deputy roster in (default), or push approved timesheets out (--push)",
+    )
+    dsync.add_argument("--location", required=True)
+    dsync.add_argument("--push", action="store_true", help="push approved timesheets instead of pulling")
+    dsync.add_argument("--from", dest="date_from", help="pull: first business date, YYYY-MM-DD")
+    dsync.add_argument("--to", dest="date_to", help="pull: last business date, YYYY-MM-DD")
+    dsync.add_argument("--date", help="push: only this business date, YYYY-MM-DD (default: all)")
+    dsync.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
 
     pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
     pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
@@ -442,6 +517,134 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
             f"{published.status.capitalize()} {published.item_count} items to "
             f"{published.provider} (ref {published.external_ref})."
         )
+    if args.command == "roster-add":
+        loc = get_location(session, args.location)
+        shift = schedule_shift(
+            session,
+            location_id=args.location,
+            staff_id=args.staff,
+            starts_at=_parse_local_dt(args.start, loc.timezone),
+            ends_at=_parse_local_dt(args.end, loc.timezone),
+            role=args.role,
+        )
+        return (
+            f"Rostered {get_staff(session, shift.staff_id).name} on {shift.business_date}: "
+            f"{_fmt_time(shift.starts_at, loc.timezone)}–{_fmt_time(shift.ends_at, loc.timezone)}"
+            f"{f' ({shift.role})' if shift.role else ''}  {shift.id}"
+        )
+    if args.command == "roster-list":
+        loc = get_location(session, args.location)
+        business_date = _parse_date(args.date) if args.date else None
+        names = _staff_names(session, args.location)
+        rows = [
+            f"{s.business_date}  {names.get(s.staff_id, s.staff_id):<16} "
+            f"{_fmt_time(s.starts_at, loc.timezone)}–{_fmt_time(s.ends_at, loc.timezone)}  "
+            f"{(s.role or ''):<8} [{s.source}]"
+            for s in list_shifts(session, args.location, business_date=business_date)
+        ]
+        return "\n".join(rows) or "No shifts."
+    if args.command == "clock-in":
+        loc = get_location(session, args.location)
+        at = _parse_local_dt(args.at, loc.timezone) if args.at else None
+        entry = clock_in(session, location_id=args.location, staff_id=args.staff, at=at)
+        return (
+            f"{get_staff(session, entry.staff_id).name} clocked on at "
+            f"{_fmt_time(entry.clock_in_at, loc.timezone)} ({entry.business_date})"
+        )
+    if args.command == "clock-out":
+        loc = get_location(session, args.location)
+        at = _parse_local_dt(args.at, loc.timezone) if args.at else None
+        entry = clock_out(
+            session,
+            location_id=args.location,
+            staff_id=args.staff,
+            at=at,
+            break_minutes=args.break_minutes,
+        )
+        out_at = entry.clock_out_at or entry.clock_in_at  # clock_out always sets it
+        worked = _hours(_span_minutes(entry.clock_in_at, out_at) - entry.break_minutes)
+        return (
+            f"{get_staff(session, entry.staff_id).name} clocked off at "
+            f"{_fmt_time(out_at, loc.timezone)}; worked {worked}"
+            f"{f' (break {entry.break_minutes}m)' if entry.break_minutes else ''}"
+        )
+    if args.command == "timesheet-build":
+        loc = get_location(session, args.location)
+        business_date = _parse_date(args.date) if args.date else local_date(loc.timezone)
+        sheets = build_timesheets_for_date(session, args.location, business_date)
+        if not sheets:
+            return f"No roster or clock data for {business_date}."
+        names = _staff_names(session, args.location)
+        lines = [f"Built {len(sheets)} timesheet(s) for {business_date}:"]
+        lines += [
+            f"  {names.get(s.staff_id, s.staff_id):<16} sched {_hours(s.scheduled_minutes)}  "
+            f"worked {_hours(s.worked_minutes)}  paid {_hours(s.paid_minutes)}  [{s.status}]"
+            for s in sheets
+        ]
+        return "\n".join(lines)
+    if args.command == "timesheet-approve":
+        sheet = approve_timesheet(session, args.timesheet, manager_pin=_read_manager_pin())
+        names = _staff_names(session, sheet.location_id)
+        approver = names.get(sheet.approved_by_staff_id or "", "?")
+        return (
+            f"Approved {names.get(sheet.staff_id, sheet.staff_id)} for {sheet.business_date}: "
+            f"paid {_hours(sheet.paid_minutes)} (approved by {approver})"
+        )
+    if args.command == "timesheet-list":
+        get_location(session, args.location)
+        business_date = _parse_date(args.date) if args.date else None
+        names = _staff_names(session, args.location)
+        rows = [
+            f"{s.id}  {s.business_date}  {names.get(s.staff_id, s.staff_id):<16} "
+            f"paid {_hours(s.paid_minutes)}  [{s.status}]{'  synced→Deputy' if s.synced_at else ''}"
+            for s in list_timesheets(session, args.location, business_date=business_date, status=args.status)
+        ]
+        return "\n".join(rows) or "No timesheets."
+    if args.command == "deputy-connect":
+        get_location(session, args.location)
+        client = _deputy_client()
+        employees = client.employees()
+        deputy_names = [
+            (e.get("DisplayName") or "").strip() for e in employees if (e.get("DisplayName") or "").strip()
+        ]
+        report = match_employees(deputy_names, list_staff(session, args.location))
+        return (
+            f"Connected to Deputy: {len(employees)} employee(s).\n"
+            f"  matched {len(report.matched)}: {', '.join(report.matched) or '-'}\n"
+            f"  in Deputy only: {', '.join(report.deputy_only) or '-'}\n"
+            f"  Void POS only: {', '.join(report.void_only) or '-'}"
+        )
+    if args.command == "deputy-sync":
+        loc = get_location(session, args.location)
+        client = _deputy_client()
+        staff = list_staff(session, args.location)
+        verb = "Would" if args.dry_run else "Did"
+        if args.push:
+            business_date = _parse_date(args.date) if args.date else None
+            pushed = push_timesheets(
+                session, args.location, client, business_date=business_date,
+                active_staff=staff, dry_run=args.dry_run,
+            )
+            lines = [f"{verb} push {len(pushed.pushed)} approved timesheet(s) to Deputy."]
+            lines += [f"  → {label}" for label in pushed.pushed]
+            lines += [f"  ! {note}" for note in pushed.skipped]
+            return "\n".join(lines)
+        from_date = _parse_date(args.date_from) if args.date_from else local_date(loc.timezone)
+        to_date = _parse_date(args.date_to) if args.date_to else from_date + timedelta(days=7)
+        start, end = _local_day_bounds(from_date, to_date, loc.timezone)
+        pulled = pull_roster(
+            session, args.location, client, start=start, end=end, active_staff=staff
+        )
+        lines = [
+            (
+                f"{verb} pull the roster for {from_date}..{to_date}: "
+                f"create {len(pulled.created)}, update {len(pulled.updated)}."
+            )
+        ]
+        lines += [f"  + {label}" for label in pulled.created]
+        lines += [f"  ~ {label}" for label in pulled.updated]
+        lines += [f"  ! {note}" for note in pulled.notes]
+        return "\n".join(lines)
     raise AssertionError(args.command)
 
 
@@ -453,6 +656,69 @@ def _read_pin() -> str:
     if getpass.getpass("Same PIN again: ") != pin:
         raise VoidPosError("the two PINs don't match", code="invalid_pin")
     return pin
+
+
+def _read_manager_pin() -> str:
+    """A manager's PIN to approve a timesheet: a prompt (not echoed) or one line of stdin."""
+    if not sys.stdin.isatty():
+        return sys.stdin.readline().strip()
+    return getpass.getpass("Manager PIN: ")
+
+
+def _parse_local_dt(text: str, tz: str) -> datetime:
+    """A local wall-clock time (YYYY-MM-DD HH:MM in the venue's timezone) as UTC."""
+    try:
+        naive = datetime.strptime(text.strip(), "%Y-%m-%d %H:%M")
+    except ValueError as exc:
+        raise VoidPosError(
+            f"use YYYY-MM-DD HH:MM, e.g. 2026-11-20 09:00 (got {text!r})", code="invalid_datetime"
+        ) from exc
+    return naive.replace(tzinfo=ZoneInfo(tz)).astimezone(UTC)
+
+
+def _parse_date(text: str) -> date:
+    try:
+        return datetime.strptime(text.strip(), "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise VoidPosError(f"use a date, YYYY-MM-DD (got {text!r})", code="invalid_date") from exc
+
+
+def _fmt_time(value: datetime, tz: str) -> str:
+    return as_aware(value).astimezone(ZoneInfo(tz)).strftime("%H:%M")
+
+
+def _span_minutes(start: datetime, end: datetime) -> int:
+    return int((as_aware(end) - as_aware(start)).total_seconds() // 60)
+
+
+def _hours(minutes: int) -> str:
+    return f"{minutes / 60:.2f}h"
+
+
+def _staff_names(session: Session, location_id: str) -> dict[str, str]:
+    """id -> name for a location's staff, including deactivated ones, so names resolve."""
+    return {
+        p.id: p.name for p in list_staff(session, location_id, include_inactive=True)
+    }
+
+
+def _local_day_bounds(from_date: date, to_date: date, tz: str) -> tuple[datetime, datetime]:
+    """The UTC instants bounding the local days ``from_date``..``to_date`` inclusive."""
+    zone = ZoneInfo(tz)
+    start = datetime.combine(from_date, time.min, tzinfo=zone).astimezone(UTC)
+    end = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
+    return start, end
+
+
+def _deputy_client() -> DeputyClient:
+    endpoint = settings.deputy_endpoint
+    token = settings.deputy_access_token
+    if endpoint is None or token is None:
+        raise VoidPosError(
+            "set VOIDPOS_DEPUTY_ENDPOINT and VOIDPOS_DEPUTY_ACCESS_TOKEN in .env first",
+            code="deputy_not_set_up",
+        )
+    return DeputyClient(endpoint, token.get_secret_value())
 
 
 def _read_text(path: str) -> str:

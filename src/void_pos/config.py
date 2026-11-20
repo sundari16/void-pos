@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     delivery_enabled: bool = True
     delivery_provider: str = "mock"
 
+    # Deputy: the venue's own Deputy install (rostering + timesheets). The endpoint is the
+    # install's base URL (e.g. https://mycompany.au.deputy.com); the token is a permanent
+    # token from that install. Unset = the Deputy sync commands are off.
+    deputy_endpoint: str | None = None
+    deputy_access_token: SecretStr | None = None
+
     @field_validator(
         "admin_token",
         "kitchen_printer_host",
@@ -80,6 +86,8 @@ class Settings(BaseSettings):
         "sendgrid_api_key",
         "sendgrid_from_email",
         "aggregator_webhook_secret",
+        "deputy_endpoint",
+        "deputy_access_token",
         mode="before",
     )
     @classmethod
@@ -116,6 +124,10 @@ class Settings(BaseSettings):
     @property
     def aggregator_enabled(self) -> bool:
         return self.aggregator_webhook_secret is not None
+
+    @property
+    def deputy_enabled(self) -> bool:
+        return self.deputy_endpoint is not None and self.deputy_access_token is not None
 
     @property
     def cors_origin_list(self) -> list[str]:
