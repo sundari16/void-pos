@@ -24,6 +24,10 @@ DEFAULT_ADJUSTMENT_ACCOUNT = "200"  # discounts/surcharges net against sales by 
 DEFAULT_TIPS_ACCOUNT = "200"  # point at a tips-payable/clearing account for the venue
 DEFAULT_ROUNDING_ACCOUNT = "860"  # Rounding
 DEFAULT_CLEARING_ACCOUNT = "090"  # Business Bank Account
+# Loyalty redemptions are a non-cash tender funded by the loyalty liability, NOT money in
+# the bank. They must land in their own liability/clearing account, or the loyalty amount is
+# banked and the bank reconciliation won't balance. Map this to the venue's own chart.
+DEFAULT_LOYALTY_ACCOUNT = "877"  # a loyalty/deferred-revenue liability — never a bank account
 
 
 @dataclass(frozen=True)
@@ -39,11 +43,14 @@ class AccountMap:
     surcharges_account: str = DEFAULT_ADJUSTMENT_ACCOUNT
     tips_account: str = DEFAULT_TIPS_ACCOUNT
     rounding_account: str = DEFAULT_ROUNDING_ACCOUNT
-    # Where each provider's takings are banked. A provider not listed uses ``default_clearing``.
+    # Where each provider's takings are banked. A provider not listed uses ``default_clearing``,
+    # except ``loyalty``, which uses ``loyalty_account`` (a liability, not the bank).
     clearing_accounts: dict[str, str] = field(
         default_factory=lambda: {"cash": DEFAULT_CLEARING_ACCOUNT}
     )
     default_clearing: str = DEFAULT_CLEARING_ACCOUNT
+    # Loyalty redemption draws down the loyalty liability; it is a tender but not cash banked.
+    loyalty_account: str = DEFAULT_LOYALTY_ACCOUNT
     # Xero AU tax-type codes.
     tax_type: str = "OUTPUT"  # GST on Income
     gst_free_tax_type: str = "EXEMPTOUTPUT"  # GST Free Income
@@ -56,7 +63,12 @@ class AccountMap:
         return self.gst_free_tax_type if revenue_class in self.gst_free_classes else self.tax_type
 
     def clearing_for(self, provider: str) -> str:
-        return self.clearing_accounts.get(provider, self.default_clearing)
+        if provider in self.clearing_accounts:
+            return self.clearing_accounts[provider]
+        if provider == "loyalty":
+            # A non-cash tender: draw down the loyalty liability, never the bank.
+            return self.loyalty_account
+        return self.default_clearing
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +81,7 @@ class AccountMap:
             "rounding_account": self.rounding_account,
             "clearing_accounts": dict(self.clearing_accounts),
             "default_clearing": self.default_clearing,
+            "loyalty_account": self.loyalty_account,
             "tax_type": self.tax_type,
             "gst_free_tax_type": self.gst_free_tax_type,
             "contact_name": self.contact_name,

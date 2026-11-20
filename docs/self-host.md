@@ -423,6 +423,7 @@ docker compose exec -T api void-pos xero-accounts --location <location id> --fil
   "rounding_account": "860",
   "clearing_accounts": {"cash": "090", "external": "091", "stripe": "092"},
   "default_clearing": "090",
+  "loyalty_account": "877",
   "tax_type": "OUTPUT",
   "gst_free_tax_type": "EXEMPTOUTPUT",
   "contact_name": "Daily Takings"
@@ -437,6 +438,11 @@ docker compose exec -T api void-pos xero-accounts --location <location id> --fil
   `stripe`) to the bank/clearing account its takings are banked into; a provider not listed
   uses `default_clearing`. `tax_type` / `gst_free_tax_type` are Xero AU tax-type codes
   (`OUTPUT` = GST on Income, `EXEMPTOUTPUT` = GST Free Income).
+- `loyalty_account` is where loyalty-point redemptions land (when loyalty is enabled). A
+  redemption is a tender but **not** money banked — it draws down the loyalty liability — so
+  it posts here, not to a bank account; map it to your own loyalty/deferred-revenue liability
+  account so the bank reconciliation stays exact. An explicit `clearing_accounts` entry for
+  `loyalty` overrides it.
 
 ### Pushing a day
 

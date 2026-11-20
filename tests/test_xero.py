@@ -80,6 +80,25 @@ def test_summary_apportions_actual_gst_and_balances_to_the_tender() -> None:
     assert takings.reference == reference_for("LOC", "2026-11-15") == "VPOS-LOC-20261115"
 
 
+def test_loyalty_tender_banks_to_the_loyalty_liability_not_the_bank() -> None:
+    # A day settled partly with loyalty points. Redemption is a tender funded by the loyalty
+    # liability, not cash in the bank, so it must post to the loyalty account (877), never the
+    # bank (090) — otherwise the redeemed amount inflates the bank and the rec won't balance.
+    closeout = _closeout(payments_by_provider={"cash": 4400, "loyalty": 660})
+    takings = build_daily_takings(closeout, AccountMap())
+
+    by_provider = {p.provider: p for p in takings.payments}
+    assert by_provider["cash"].account_code == "090"
+    assert (by_provider["loyalty"].account_code, by_provider["loyalty"].amount_cents) == ("877", 660)
+    # The invoice is still fully paid and balanced to the tender, no rounding needed.
+    assert (takings.total_cents, takings.sub_total_cents + takings.tax_cents) == (5060, 5060)
+    assert "Rounding" not in {line.description for line in takings.lines}
+
+    # The loyalty account is overridable on its own, and an explicit clearing entry wins.
+    assert AccountMap(loyalty_account="915").clearing_for("loyalty") == "915"
+    assert AccountMap(clearing_accounts={"loyalty": "920"}).clearing_for("loyalty") == "920"
+
+
 def test_summary_handles_tips_refunds_discounts_and_gst_free_classes() -> None:
     closeout = _closeout(
         gst_cents=460,
