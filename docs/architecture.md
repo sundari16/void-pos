@@ -44,6 +44,7 @@ a socket straight to the kitchen printer.
 | `src/void_pos/crm/` | Customer records: find-or-create (match by phone then email), order history |
 | `src/void_pos/loyalty/` | Earn/redeem on the loyalty ledger (balance is `SUM(points_delta)`); redemption is a non-cash tender via a `LoyaltyProvider` |
 | `src/void_pos/marketing/` | Campaign send seam: a `Sender` protocol + no-op `LogSender` in the open core; config-driven Twilio/SendGrid adapters mirror the payments provider seam |
+| `src/void_pos/social/` | Social posting seam: a `SocialPoster` protocol, `validate_post` (rules every poster applies), and a no-op `LogPoster`. The real Meta (Facebook / Instagram) adapter is commercial |
 | `src/void_pos/aggregators/` | Delivery-aggregator order ingestion: the `AggregatorProvider` seam (normalize an order, sync the menu out, accept/reject), an ingestion service that injects an order onto the aggregator channel idempotently, and an open-core mock. Real Uber Eats / DoorDash / Menulog adapters are commercial |
 | `src/void_pos/voice/` | Voice AI order intake: resolve a spoken order against the live menu, confirm it (read-back), and place it on the `voice` channel through `place_order`. `agent.py` is the seam the external voice stack (`livekit-impl` / `cold-caller`) plugs into; the telephony/LLM is out of this repo. See [voice-ordering.md](voice-ordering.md) |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
