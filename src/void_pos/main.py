@@ -11,6 +11,7 @@ from .api import (
     admin_router,
     aggregator_router,
     board_router,
+    delivery_router,
     device_router,
     install_error_handlers,
     menu_router,
@@ -39,6 +40,7 @@ app.include_router(admin_router)
 app.include_router(board_router)
 app.include_router(online_router)
 app.include_router(aggregator_router)
+app.include_router(delivery_router)
 
 
 @app.get("/health", tags=["health"])

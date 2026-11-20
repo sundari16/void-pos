@@ -7,6 +7,7 @@ from .base import Base
 from .board import FeatureRequest, FeatureRequestVote
 from .catalog import MenuChange, MenuItem, MenuItemModifierGroup, Modifier, ModifierGroup
 from .crm import Customer
+from .delivery import Delivery
 from .event import Event, SyncCounter
 from .loyalty import LoyaltyLedger
 from .order import Order, OrderAdjustment, OrderLine
@@ -19,6 +20,7 @@ __all__ = [
     "AggregatorOrder",
     "Base",
     "Customer",
+    "Delivery",
     "Device",
     "Event",
     "FeatureRequest",

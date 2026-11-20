@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     sendgrid_api_key: SecretStr | None = None
     sendgrid_from_email: str | None = None
 
+    # On-demand delivery dispatch: send a courier for an own-channel delivery order.
+    # The open core ships the "mock" courier (fully testable, no network); "uber_direct"
+    # is a commercial adapter. Unset env keeps the mock, so self-host and tests just work.
+    delivery_enabled: bool = True
+    delivery_provider: str = "mock"
+
     @field_validator(
         "admin_token",
         "kitchen_printer_host",

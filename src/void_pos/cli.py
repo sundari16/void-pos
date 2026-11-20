@@ -11,6 +11,8 @@
     void-pos send-campaign --location <id> --channel sms --body "Hi {name}!" [--dry-run]
     void-pos aggregator-order --location <id> --file order.json [--reject] [--dry-run]
     void-pos aggregator-sync-menu --location <id> [--provider mock]
+    void-pos delivery-dispatch --location <id> --order <id> --name "..." --phone "..." --address "..."
+    void-pos delivery-status --delivery <id> --status picked_up
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -31,9 +33,24 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from .aggregators import build_provider, ingest_order, reject_order, sync_menu_out
+from .aggregators import (
+    build_provider as build_aggregator_provider,
+)
+from .aggregators import (
+    ingest_order,
+    reject_order,
+    sync_menu_out,
+)
 from .clock import local_date
 from .config import settings
+from .delivery import (
+    DeliveryParty,
+    dispatch_delivery,
+    update_delivery_status,
+)
+from .delivery import (
+    build_provider as build_delivery_provider,
+)
 from .devices import (
     PairingCode,
     create_location,
@@ -46,6 +63,7 @@ from .devices import (
     revoke_device,
 )
 from .errors import VoidPosError
+from .ids import new_ulid
 from .marketing import make_sender, send_campaign
 from .menu.importer import import_menu, parse_menu_csv
 from .menu.modifier_import import import_modifiers, parse_modifier_csv
@@ -169,6 +187,32 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--location", required=True)
     sm.add_argument("--provider", default="mock", help="platform slug; the open core ships 'mock'")
 
+    disp = sub.add_parser(
+        "delivery-dispatch", help="dispatch a courier for an own-channel delivery order"
+    )
+    disp.add_argument("--location", required=True)
+    disp.add_argument("--order", required=True, help="the delivery order's id")
+    disp.add_argument("--name", required=True, help="who the courier delivers to")
+    disp.add_argument("--phone", required=True)
+    disp.add_argument("--address", required=True, help="the dropoff address")
+    disp.add_argument("--notes", help="dropoff instructions (buzzer, gate code, ...)")
+    disp.add_argument("--provider", default="mock", help="courier provider (open core: mock)")
+    disp.add_argument("--delivery-id", help="defaults to a fresh ULID")
+    disp.add_argument("--order-value-cents", type=int, help="declared value; default: order total")
+
+    dstat = sub.add_parser(
+        "delivery-status", help="record a courier status callback (simulate the platform)"
+    )
+    dstat.add_argument("--delivery", required=True, help="the delivery id")
+    dstat.add_argument(
+        "--status",
+        required=True,
+        choices=("requested", "accepted", "picked_up", "delivered", "canceled", "failed"),
+    )
+    dstat.add_argument("--courier", help="the courier's name, once assigned")
+    dstat.add_argument("--tracking", help="a live tracking URL")
+    dstat.add_argument("--fee-cents", type=int, help="the courier fee, in cents")
+
     pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
     pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
     pt.add_argument("--port", type=int, help="defaults to VOIDPOS_KITCHEN_PRINTER_PORT (9100)")
@@ -269,6 +313,36 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
     if args.command == "deactivate-staff":
         person = deactivate_staff(session, args.staff)
         return f"Deactivated {person.name}; their PIN no longer works"
+    if args.command == "delivery-dispatch":
+        get_location(session, args.location)
+        outcome = dispatch_delivery(
+            session,
+            args.location,
+            args.order,
+            build_delivery_provider(args.provider),
+            delivery_id=args.delivery_id or new_ulid(),
+            dropoff=DeliveryParty(
+                name=args.name, phone=args.phone, address=args.address, notes=args.notes
+            ),
+            order_value_cents=args.order_value_cents,
+        )
+        d = outcome.delivery
+        fee = f"{d.fee_cents} cents" if d.fee_cents is not None else "—"
+        return (
+            f"Dispatched delivery {d.id}: {d.status} via {d.provider} "
+            f"(courier ref {d.external_ref or '—'}, fee {fee})\n"
+            f"  Track: {d.tracking_url or '—'}"
+        )
+    if args.command == "delivery-status":
+        outcome = update_delivery_status(
+            session,
+            args.delivery,
+            status=args.status,
+            courier_name=args.courier,
+            tracking_url=args.tracking,
+            fee_cents=args.fee_cents,
+        )
+        return f"Delivery {outcome.delivery.id} is now {outcome.delivery.status}"
     if args.command == "import-square":
         get_location(session, args.location)
         if settings.square_access_token is None:
@@ -333,7 +407,7 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         )
     if args.command == "aggregator-order":
         get_location(session, args.location)
-        provider = build_provider(args.provider)
+        provider = build_aggregator_provider(args.provider)
         try:
             raw = json.loads(_read_text(args.file))
         except json.JSONDecodeError as exc:
@@ -362,7 +436,7 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         )
     if args.command == "aggregator-sync-menu":
         get_location(session, args.location)
-        provider = build_provider(args.provider)
+        provider = build_aggregator_provider(args.provider)
         published = sync_menu_out(session, provider, args.location)
         return (
             f"{published.status.capitalize()} {published.item_count} items to "
