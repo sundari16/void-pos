@@ -19,6 +19,9 @@
     void-pos timesheet-approve --timesheet <id>         (asks for a manager's PIN)
     void-pos deputy-connect --location <id>             (VOIDPOS_DEPUTY_*)
     void-pos deputy-sync --location <id> [--dry-run]    (pull roster; --push sends timesheets)
+    void-pos xero-connect --location <id>   (connect the venue's Xero org; VOIDPOS_XERO_*)
+    void-pos xero-accounts --location <id> [--file map.json]   (account-code mapping)
+    void-pos xero-push --location <id> --business-date 2026-11-15 [--dry-run]
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -34,11 +37,22 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from .accounting import (
+    XeroClient,
+    account_map_for,
+    build_authorize_url,
+    build_takings,
+    complete_connection,
+    new_state,
+    push_daily_takings,
+    set_account_map,
+)
 from .aggregators import (
     build_provider as build_aggregator_provider,
 )
@@ -158,6 +172,32 @@ def build_parser() -> argparse.ArgumentParser:
     venue.add_argument("--address")
     venue.add_argument("--phone")
     venue.add_argument("--footer", help="a line at the bottom, e.g. Thank you!")
+
+    connect = sub.add_parser(
+        "xero-connect", help="connect this location to the venue's own Xero organisation"
+    )
+    connect.add_argument("--location", required=True)
+    connect.add_argument(
+        "--redirect-url",
+        help="the URL Xero redirected to (with ?code=...); omit to be prompted for it",
+    )
+
+    accounts = sub.add_parser(
+        "xero-accounts", help="set or show the Xero account-code mapping for a location"
+    )
+    accounts.add_argument("--location", required=True)
+    accounts.add_argument(
+        "--file", help="a JSON account map to store; omit to print the mapping in force"
+    )
+
+    push = sub.add_parser(
+        "xero-push", help="push a day's takings to Xero (one invoice per business date)"
+    )
+    push.add_argument("--location", required=True)
+    push.add_argument("--business-date", required=True, help="YYYY-MM-DD, the location's calendar")
+    push.add_argument(
+        "--dry-run", action="store_true", help="print the summary and Xero payload, send nothing"
+    )
 
     staff = sub.add_parser(
         "add-staff", help="add a staff member; the PIN is asked for (or read from standard input)"
@@ -375,6 +415,46 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
             f"{loc.business_name or loc.name}\n  ABN: {abn}\n  Address: {loc.address or '-'}\n"
             f"  Phone: {loc.phone or '-'}\n  Footer: {loc.receipt_footer or '-'}"
         )
+    if args.command == "xero-connect":
+        return _xero_connect(session, args)
+    if args.command == "xero-accounts":
+        get_location(session, args.location)
+        if not args.file:
+            current = account_map_for(session, args.location).to_dict()
+            return "Xero account map in force:\n" + json.dumps(current, indent=2)
+        data = json.loads(_read_text(args.file))
+        if not isinstance(data, dict):
+            raise VoidPosError("the account map must be a JSON object", code="xero_bad_account_map")
+        conn = set_account_map(session, args.location, data)
+        return f"Stored the Xero account map for {conn.tenant_name or args.location}."
+    if args.command == "xero-push":
+        get_location(session, args.location)
+        push_date = _business_date(args.business_date)
+        if args.dry_run:
+            takings = build_takings(session, args.location, push_date)
+            return "\n".join(
+                takings.summary_lines()
+                + ["", "Xero invoice payload:", json.dumps(takings.invoice_payload(), indent=2)]
+            )
+        if not settings.xero_enabled:
+            raise VoidPosError(
+                "set VOIDPOS_XERO_CLIENT_ID and VOIDPOS_XERO_CLIENT_SECRET in .env first",
+                code="xero_not_set_up",
+            )
+        invoice = push_daily_takings(
+            session, args.location, push_date, client=_xero_client()
+        )
+        verb = "Created" if invoice["created"] else "Updated"
+        xero_lines = [
+            f"{verb} Xero invoice {invoice['invoice_number']} ({invoice['invoice_id']})",
+            f"  Total ${invoice['total_cents'] / 100:.2f} incl. GST ${invoice['tax_cents'] / 100:.2f}",
+        ]
+        xero_lines += [
+            f"  Paid ${p['amount_cents'] / 100:.2f} to {p['account_code']} ({p['provider']})"
+            for p in invoice["payments"]
+        ]
+        xero_lines += [f"  ! {note}" for note in invoice["issues"]]
+        return "\n".join(xero_lines)
     if args.command == "add-staff":
         get_location(session, args.location)
         person = create_staff(
@@ -719,6 +799,65 @@ def _deputy_client() -> DeputyClient:
             code="deputy_not_set_up",
         )
     return DeputyClient(endpoint, token.get_secret_value())
+
+
+def _xero_client() -> XeroClient:
+    assert settings.xero_client_id is not None and settings.xero_client_secret is not None
+    return XeroClient(
+        client_id=settings.xero_client_id.get_secret_value(),
+        client_secret=settings.xero_client_secret.get_secret_value(),
+        redirect_uri=settings.xero_redirect_uri,
+    )
+
+
+def _code_and_state(redirect: str) -> tuple[str, str | None]:
+    """The ``code`` (and ``state`` if present) from a pasted Xero redirect URL, or the code
+    itself if just the code was pasted."""
+    text = redirect.strip()
+    query = parse_qs(urlparse(text).query)
+    if "code" in query:
+        state = query.get("state", [None])[0]
+        return query["code"][0], state
+    if text and "=" not in text and "/" not in text:
+        return text, None
+    raise VoidPosError("couldn't find a code in that redirect URL", code="xero_no_code")
+
+
+def _xero_connect(session: Session, args: argparse.Namespace) -> str:
+    get_location(session, args.location)
+    if not settings.xero_enabled:
+        raise VoidPosError(
+            "set VOIDPOS_XERO_CLIENT_ID and VOIDPOS_XERO_CLIENT_SECRET in .env first",
+            code="xero_not_set_up",
+        )
+    client = _xero_client()
+    state = new_state()
+    if args.redirect_url:
+        code, _ = _code_and_state(args.redirect_url)
+    else:
+        url = build_authorize_url(settings, state=state)
+        print(
+            "Open this URL, sign in to Xero and authorise the organisation:\n\n"
+            f"  {url}\n\nThen paste the full URL you were redirected to and press Enter:",
+            file=sys.stderr,
+        )
+        code, got_state = _code_and_state(sys.stdin.readline())
+        if got_state is not None and got_state != state:
+            raise VoidPosError(
+                "the redirect's state didn't match; start the connect again",
+                code="xero_state_mismatch",
+            )
+    conn = complete_connection(session, args.location, client=client, code=code)
+    return f"Connected {conn.tenant_name or conn.tenant_id} to this location."
+
+
+def _business_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise VoidPosError(
+            f"--business-date must be YYYY-MM-DD, not {value!r}", code="invalid_business_date"
+        ) from exc
 
 
 def _read_text(path: str) -> str:

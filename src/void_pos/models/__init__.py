@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .accounting import XeroConnection
 from .aggregator import ACCEPTED, REJECTED, AggregatorOrder
 from .base import Base
 from .board import FeatureRequest, FeatureRequestVote
@@ -44,4 +45,5 @@ __all__ = [
     "Staff",
     "SyncCounter",
     "Timesheet",
+    "XeroConnection",
 ]
