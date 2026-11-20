@@ -9,6 +9,8 @@
     void-pos add-staff --location <id> --name "Asha" --role manager   (asks for the PIN)
     void-pos venue-details --location <id> --abn "51 824 753 556" --address "..."
     void-pos send-campaign --location <id> --channel sms --body "Hi {name}!" [--dry-run]
+    void-pos aggregator-order --location <id> --file order.json [--reject] [--dry-run]
+    void-pos aggregator-sync-menu --location <id> [--provider mock]
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import sys
 from collections.abc import Sequence
 from datetime import timedelta
@@ -28,6 +31,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from .aggregators import build_provider, ingest_order, reject_order, sync_menu_out
 from .clock import local_date
 from .config import settings
 from .devices import (
@@ -148,6 +152,22 @@ def build_parser() -> argparse.ArgumentParser:
     camp.add_argument("--subject", help="email subject line")
     camp.add_argument("--limit", type=int, help="cap the number of recipients")
     camp.add_argument("--dry-run", action="store_true", help="show the audience, send nothing")
+
+    agg = sub.add_parser(
+        "aggregator-order", help="simulate an incoming aggregator order (the mock provider)"
+    )
+    agg.add_argument("--location", required=True)
+    agg.add_argument("--provider", default="mock", help="platform slug; the open core ships 'mock'")
+    agg.add_argument("--file", required=True, help="a JSON order file, or - for standard input")
+    agg.add_argument("--reject", action="store_true", help="decline the order instead of ingesting it")
+    agg.add_argument("--reason", help="why it was rejected (with --reject)")
+    agg.add_argument("--dry-run", action="store_true", help="do it, then roll back; show what would happen")
+
+    sm = sub.add_parser(
+        "aggregator-sync-menu", help="publish the venue's menu to an aggregator (the mock provider)"
+    )
+    sm.add_argument("--location", required=True)
+    sm.add_argument("--provider", default="mock", help="platform slug; the open core ships 'mock'")
 
     pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
     pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
@@ -310,6 +330,43 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         return (
             f"{verb} {campaign.total} opted-in {args.channel} customer(s): "
             f"{campaign.sent} sent, {campaign.failed} failed, {campaign.skipped} skipped."
+        )
+    if args.command == "aggregator-order":
+        get_location(session, args.location)
+        provider = build_provider(args.provider)
+        try:
+            raw = json.loads(_read_text(args.file))
+        except json.JSONDecodeError as exc:
+            raise VoidPosError(
+                f"the order file isn't valid JSON: {exc}", code="invalid_aggregator_order"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise VoidPosError(
+                "the order file must be a JSON object", code="invalid_aggregator_order"
+            )
+        if args.reject:
+            rejected = reject_order(
+                session, provider, args.location, raw,
+                reason=args.reason or "the venue can't make this order",
+            )
+            verb = "Would reject" if args.dry_run else "Rejected"
+            again = " (already handled)" if rejected.replayed else ""
+            return f"{verb} {provider.name} order {rejected.tie.external_order_id}{again}: {rejected.tie.reason}"
+        ingested = ingest_order(session, provider, args.location, raw)
+        order = ingested.order
+        verb = "Would ingest" if args.dry_run else "Ingested"
+        again = " (already handled)" if ingested.replayed else ""
+        return (
+            f"{verb} {provider.name} order {ingested.tie.external_order_id}{again} as "
+            f"order #{order.order_number} ({order.state}) on the {order.channel} channel."
+        )
+    if args.command == "aggregator-sync-menu":
+        get_location(session, args.location)
+        provider = build_provider(args.provider)
+        published = sync_menu_out(session, provider, args.location)
+        return (
+            f"{published.status.capitalize()} {published.item_count} items to "
+            f"{published.provider} (ref {published.external_ref})."
         )
     raise AssertionError(args.command)
 

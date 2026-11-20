@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .api import (
     admin_router,
+    aggregator_router,
     board_router,
     device_router,
     install_error_handlers,
@@ -37,6 +38,7 @@ app.include_router(menu_router)
 app.include_router(admin_router)
 app.include_router(board_router)
 app.include_router(online_router)
+app.include_router(aggregator_router)
 
 
 @app.get("/health", tags=["health"])

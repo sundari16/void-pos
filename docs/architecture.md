@@ -44,6 +44,7 @@ a socket straight to the kitchen printer.
 | `src/void_pos/crm/` | Customer records: find-or-create (match by phone then email), order history |
 | `src/void_pos/loyalty/` | Earn/redeem on the loyalty ledger (balance is `SUM(points_delta)`); redemption is a non-cash tender via a `LoyaltyProvider` |
 | `src/void_pos/marketing/` | Campaign send seam: a `Sender` protocol + no-op `LogSender` in the open core; config-driven Twilio/SendGrid adapters mirror the payments provider seam |
+| `src/void_pos/aggregators/` | Delivery-aggregator order ingestion: the `AggregatorProvider` seam (normalize an order, sync the menu out, accept/reject), an ingestion service that injects an order onto the aggregator channel idempotently, and an open-core mock. Real Uber Eats / DoorDash / Menulog adapters are commercial |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
 | `src/void_pos/board/` | The public feature request board: submit, list with votes, upvote (idempotent), set status |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
@@ -211,6 +212,48 @@ for the venue admin — taken from the token, never the body, so one till counts
 A request's status is one of `submitted`, `under_review`, `planned`, `shipped`; its
 `updated_at` moves when the status changes. The back office has a **Board** screen
 (`/admin/board`) to submit, upvote and (as admin) move status.
+
+## Delivery-aggregator orders
+
+Orders from a delivery platform (Uber Eats, DoorDash, Menulog) land on the existing
+`aggregator` channel and then behave like any order — they list, print, settle, report and
+reconcile the same way. `src/void_pos/aggregators/` holds the seam and the ingestion
+(`provider.py` the `AggregatorProvider` protocol and the partner-neutral shapes;
+`providers.py` the open-core `MockAggregator` plus `build_provider`; `menu.py` the catalog
+snapshot; `service.py` the ingestion). An incoming order is injected through the ordinary
+event log, three events on one virtual device:
+
+1. `order.placed` on the aggregator channel — each item an item line, its modifiers child
+   lines, every name/price/tax/category a snapshot of **what the partner charged** (rule 3),
+   never read live from the catalog, so an order the platform already took is never rejected
+   by a menu edit.
+2. `order.paid`, provider `aggregator`, carrying the **partner's** payment reference in
+   `external_ref` (rule 5) — the platform charged the customer, so the order lands paid.
+3. `order.sent` — fired to the kitchen like any online order.
+
+Three things keep this faithful to the data model:
+
+- **A channel device, not a till.** Every order is attributed to a device (its
+  order-number range, its `seq`). Aggregator orders go through one virtual "Aggregators"
+  device per location, created on first use, never paired, in a reserved high number band
+  (`900001`–`999999`) so its kitchen call-outs never collide with a till's.
+- **Idempotent by the partner's order id.** One `aggregator_order` row per
+  `(provider, external_order_id)` is the tie and the dedupe key: the same webhook twice
+  returns the order already made, never a second one. The row keeps the partner payload for
+  reconciliation against the platform's payout — the partner's id lives *beside* ours, never
+  as a key.
+- **Accept / reject is the partner handshake.** Ingesting confirms the order with the
+  partner (`provider.accept`); `reject_order` declines it before anything enters the sales
+  pipeline (`provider.reject`, the platform refunds the customer), recording a tie row with
+  no order.
+
+`POST /aggregators/{provider}/locations/{id}/orders` is the webhook, gated by a shared
+secret in `X-Void-Aggregator-Secret` (`VOIDPOS_AGGREGATOR_WEBHOOK_SECRET`; unset = off); a
+`/reject` sibling declines, and `/menu` (admin) publishes the catalog. `void-pos
+aggregator-order` and `aggregator-sync-menu` drive the same services from the command line.
+Only the `mock` provider ships in the open core; the real partner adapters implement the
+same protocol against each platform's signed API and live in the commercial layer — the
+same open-core-seam-plus-commercial-adapter split payments uses for Stripe.
 
 ## Who may do what
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .admin_routes import router as admin_router
+from .aggregator_routes import router as aggregator_router
 from .board_routes import router as board_router
 from .device_routes import router as device_router
 from .errors import install_error_handlers
@@ -12,6 +13,7 @@ from .routes import router
 
 __all__ = [
     "admin_router",
+    "aggregator_router",
     "board_router",
     "device_router",
     "install_error_handlers",
