@@ -138,6 +138,107 @@ A thermal receipt printer at the counter is optional. Set `VOIDPOS_RECEIPT_PRINT
 (and `VOIDPOS_RECEIPT_PRINTER_COLUMNS=32` for 58 mm paper) in `.env`; without one, the
 till's **Receipt** button shows the receipt to print from the tablet.
 
+## Online ordering, loyalty and marketing
+
+The web app serves a customer storefront at `/order/<location id>` (share that link, or set
+`NEXT_PUBLIC_DEFAULT_LOCATION` so bare `/order` opens your venue). Customers browse the live
+menu, order for pickup or delivery, and pay by card or at pickup. A web order goes onto the
+`web` channel in the **same pipeline** as the tills — it appears in Open orders and prints
+in the kitchen like any other. It is on by default (`VOIDPOS_ONLINE_ORDERING_ENABLED=false`
+turns it off). Online card payments reuse the Stripe keys above.
+
+**Loyalty** is off until you turn it on. When enabled, a customer earns whole points per
+whole dollar spent and can redeem them at checkout; the balance is always the sum of the
+ledger, never a stored number, so it exports cleanly. Set in `.env`:
+
+```bash
+VOIDPOS_LOYALTY_ENABLED=true
+VOIDPOS_LOYALTY_EARN_POINTS_PER_DOLLAR=1    # 1 point per $1
+VOIDPOS_LOYALTY_REDEEM_CENTS_PER_POINT=1    # each point is worth 1c off (1% back)
+```
+
+**Marketing**: send an SMS or email to your opted-in customers (only customers who ticked
+the consent box on the storefront are ever contacted). Out of the box the sender just logs
+what it would send; point a channel at your own Twilio/SendGrid account to send for real
+(see `.env.example`). `{name}` in the message is filled per customer.
+
+```bash
+docker compose exec api void-pos send-campaign --location <location id> --channel sms \
+  --body "Hi {name}, 10% off all weekend!" --dry-run   # drop --dry-run to send
+```
+
+## Rostering, time-clocking and timesheets
+
+Plan who is on, record who actually worked, and turn the two into approved timesheets — one
+per staff member per trading day. Times are the venue's local time; the business date is the
+venue's own trading day, so a shift that runs past midnight still lands on the right day.
+
+Roster a shift, then clock people on and off (a break is recorded as unpaid minutes):
+
+```bash
+docker compose exec api void-pos roster-add --location <id> --staff <staff id> \
+  --start "2026-11-20 09:00" --end "2026-11-20 17:00" --role kitchen
+docker compose exec api void-pos clock-in  --location <id> --staff <staff id>
+docker compose exec api void-pos clock-out --location <id> --staff <staff id> --break 30
+```
+
+`roster-list` and (after clocking off) `timesheet-build` show the day. A timesheet totals
+attendance minus breaks into the paid hours; a manager approves it with their PIN, after
+which it is frozen:
+
+```bash
+docker compose exec api void-pos timesheet-build --location <id> --date 2026-11-20
+docker compose exec api void-pos timesheet-list  --location <id> --date 2026-11-20
+docker compose exec api void-pos timesheet-approve --timesheet <timesheet id>
+```
+
+A day with anyone still clocked on can't be approved, and an approved timesheet can't be
+rebuilt. `clock-in`/`clock-out` and `roster-add` take an optional `--at`/`--start`/`--end`
+in local time (`YYYY-MM-DD HH:MM`); without `--at`, the clock uses now.
+
+### Deputy
+
+If the venue already rosters and runs payroll in [Deputy](https://www.deputy.com), Void POS
+syncs with the venue's **own** Deputy install — no middleman, the token is only ever sent to
+the venue's Deputy endpoint. Set both in `.env` (a permanent token from that Deputy install):
+
+```
+VOIDPOS_DEPUTY_ENDPOINT=https://mycompany.au.deputy.com
+VOIDPOS_DEPUTY_ACCESS_TOKEN=<permanent token>
+```
+
+Deputy employees are matched to Void POS staff **by name** (case-insensitive), the same way
+the Square import matches menu items — so add each person with the same name they have in
+Deputy. `deputy-connect` checks the token and shows who matches:
+
+```bash
+docker compose exec api void-pos deputy-connect --location <id>
+```
+
+Two directions, run either or both:
+
+- **Pull the roster in** (the default) — the manager builds the week's roster in Deputy, and
+  this reads it into the POS's scheduled shifts. Read-only, idempotent (a Deputy roster maps
+  to one shift, so re-pulling updates in place, never duplicates). This is the recommended
+  starting point — it is the direct mirror of the Square import and needs the least trust.
+
+  ```bash
+  docker compose exec api void-pos deputy-sync --location <id> --from 2026-11-20 --to 2026-11-26 --dry-run
+  docker compose exec api void-pos deputy-sync --location <id> --from 2026-11-20 --to 2026-11-26
+  ```
+
+- **Push approved timesheets out** (`--push`) — the clock-on/off and the manager's approval
+  happen here, at the venue, which Deputy can't see; this posts approved timesheets back to
+  Deputy for payroll. Idempotent: a timesheet is pushed once and then marked, so re-running
+  pushes nothing already sent. A dry run never writes to Deputy.
+
+  ```bash
+  docker compose exec api void-pos deputy-sync --location <id> --push --dry-run
+  docker compose exec api void-pos deputy-sync --location <id> --push
+  ```
+
+Anyone a sync can't match by name is reported and skipped, never guessed. Run `--dry-run`
+first either way.
 ## Kitchen printer
 
 Network ESC/POS printers listen on port 9100. Set its address in `.env` and restart:
@@ -214,10 +315,150 @@ docker compose start api web
 
 Taking a backup right now: `docker compose restart backup`.
 
+## Delivery aggregators
+
+Void POS can take orders from delivery platforms (Uber Eats, DoorDash, Menulog) straight
+onto the same order flow — they ring up on the `aggregator` channel, print to the kitchen
+and show in the closeout like any other order. The order is recorded **paid** with provider
+`aggregator` (the platform already charged the customer), carrying the platform's own
+reference so it reconciles against the platform's payout.
+
+The open core ships a **mock** provider so you can see the whole flow end to end. The real
+Uber Eats / DoorDash / Menulog connectors each need that platform's partner approval and
+signed API access, and are a separate commercial module — not in this repo.
+
+**Try it from the command line** (the mock provider, no partner needed):
+
+```bash
+# an order file: see the shape below
+docker compose exec api void-pos aggregator-order --location <id> --file /tmp/order.json
+# publish the venue's menu to the platform (the mock just reports what it would send)
+docker compose exec api void-pos aggregator-sync-menu --location <id>
+```
+
+A mock order file is a small JSON document:
+
+```json
+{
+  "id": "UE-10021",
+  "display_id": "A7QK",
+  "fulfillment": "delivery",
+  "payment_ref": "ue_charge_88f2",
+  "items": [
+    {"name": "Masala Dosa", "quantity": 2, "unit_price_cents": 1850, "category": "Mains",
+     "tax_rate": 0.1, "modifiers": [{"name": "Extra hot", "unit_price_cents": 0}]}
+  ]
+}
+```
+
+Ingesting is **idempotent on the platform's order id** (`id`): the same order twice is the
+same order, never two. `--reject --reason "..."` declines an order instead (the platform
+refunds the customer); nothing enters the sales pipeline.
+
+**The webhook.** To let a platform (or your own adapter) post orders in, set a shared secret
+`VOIDPOS_AGGREGATOR_WEBHOOK_SECRET` (unset = the webhook is off) and point it at
+`POST /aggregators/mock/locations/<id>/orders` with the secret in the
+`X-Void-Aggregator-Secret` header. `.../orders/reject` declines one;
+`.../menu` (admin token) publishes the menu.
+
 ## Export
 
 The owner can take everything out at any time, as JSON or CSV, with the admin token:
 `GET /export/{location_id}` and `GET /export/{location_id}/csv/{orders|order_lines|payments|...}`.
+
+## Accounting (Xero)
+
+Void POS can push each day's takings to the venue's **own** Xero organisation — one "Daily
+takings" sales invoice per business date, with sales split by revenue class, the GST, tips,
+discounts, surcharges and refunds, marked paid into bank/clearing accounts by payment type
+(cash, card on terminal, Stripe). It reads only the closeout figures; it changes nothing in
+Xero beyond that one invoice per day. Like the Square import, it uses the venue's own Xero
+connection — nothing goes through a Void account.
+
+### One-off: a Xero app and the connection
+
+1. At [developer.xero.com](https://developer.xero.com) create an app for the venue (an
+   "Auth Code" / web app). Add a redirect URI — `http://localhost:8000/xero/callback` is
+   fine for a venue machine — and copy the **client id** and a **client secret**.
+2. Put them in `.env` and restart the API:
+
+   ```
+   VOIDPOS_XERO_CLIENT_ID=<client id>
+   VOIDPOS_XERO_CLIENT_SECRET=<client secret>
+   VOIDPOS_XERO_REDIRECT_URI=http://localhost:8000/xero/callback
+   ```
+
+3. Connect the org once (the command prints a sign-in URL, then waits for you to paste back
+   the URL Xero redirects you to):
+
+   ```bash
+   docker compose exec api void-pos xero-connect --location <location id>
+   ```
+
+   Sign in as the venue, choose the organisation and authorise. The connection (the Xero
+   org and a refresh token) is stored on the venue machine; the client secret and that token
+   are as sensitive as the admin token — keep `.env` and the database private. Re-run
+   `xero-connect` any time to reconnect or switch org.
+
+### Account-code mapping
+
+The invoice posts to account **codes** from the venue's Xero chart of accounts. Sensible
+Australian defaults are built in, but the bank/clearing codes especially must point at the
+venue's own accounts. Print the mapping in force, then store an override (only the keys you
+change; the rest keep their defaults):
+
+```bash
+docker compose exec api void-pos xero-accounts --location <location id>
+docker compose exec -T api void-pos xero-accounts --location <location id> --file - < accounts.json
+```
+
+```json
+{
+  "sales_account": "200",
+  "class_accounts": {"Drinks": "201"},
+  "gst_free_classes": [],
+  "discounts_account": "200",
+  "surcharges_account": "200",
+  "tips_account": "820",
+  "rounding_account": "860",
+  "clearing_accounts": {"cash": "090", "external": "091", "stripe": "092"},
+  "default_clearing": "090",
+  "loyalty_account": "877",
+  "tax_type": "OUTPUT",
+  "gst_free_tax_type": "EXEMPTOUTPUT",
+  "contact_name": "Daily Takings"
+}
+```
+
+- Sales go to `sales_account`, or `class_accounts[<revenue class>]` where listed.
+- The day's actual GST is apportioned across the taxable classes, so the invoice's GST
+  equals the closeout's. List any GST-free revenue classes in `gst_free_classes`; they then
+  carry no GST (tax type `gst_free_tax_type`).
+- `clearing_accounts` maps a payment provider (`cash`, `external` for card-on-terminal,
+  `stripe`) to the bank/clearing account its takings are banked into; a provider not listed
+  uses `default_clearing`. `tax_type` / `gst_free_tax_type` are Xero AU tax-type codes
+  (`OUTPUT` = GST on Income, `EXEMPTOUTPUT` = GST Free Income).
+- `loyalty_account` is where loyalty-point redemptions land (when loyalty is enabled). A
+  redemption is a tender but **not** money banked — it draws down the loyalty liability — so
+  it posts here, not to a bank account; map it to your own loyalty/deferred-revenue liability
+  account so the bank reconciliation stays exact. An explicit `clearing_accounts` entry for
+  `loyalty` overrides it.
+
+### Pushing a day
+
+Always dry-run first — it prints the full summary and the exact Xero invoice payload and
+sends nothing, so you can check the codes against your chart:
+
+```bash
+docker compose exec api void-pos xero-push --location <location id> --business-date 2026-11-15 --dry-run
+docker compose exec api void-pos xero-push --location <location id> --business-date 2026-11-15
+```
+
+The push is idempotent per (location, business date): it finds the one invoice for that day
+(reference `VPOS-<location>-<YYYYMMDD>`), clears its payments, updates it and re-applies the
+payments — so pushing the same day again never double-counts. Push after the day is settled
+(no open orders); an open balance is absorbed by a rounding line and flagged. Dates are the
+location's own calendar (an order rung up after midnight still belongs to the prior day).
 
 ## Upgrade
 

@@ -1,12 +1,17 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useTill } from "./TillProvider";
 
 export function AppHeader() {
   const { till, unpair } = useTill();
   const [confirming, setConfirming] = useState(false);
+  const pathname = usePathname();
+
+  // The customer storefront (/order) is not the staff app: it brings its own header.
+  if (pathname?.startsWith("/order")) return null;
 
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-surface/90 backdrop-blur">

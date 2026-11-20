@@ -345,6 +345,8 @@ def _h_order_placed(session: Session, event: Event) -> ApplyResult:
             channel=p["channel"],
             fulfillment=p["fulfillment"],
             table_label=p.get("table_label"),
+            delivery_address=p.get("delivery_address"),
+            customer_note=p.get("customer_note"),
             placed_at=_utc(event.occurred_at),
             state="open",
         )

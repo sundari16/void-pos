@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -26,6 +26,9 @@ from ..ids import Ulid
 from ..menu.service import TillMenu
 from ..models import Device, Location, MenuChange, OrderLine, Payment, Refund
 from ..orders.views import OrderView
+
+if TYPE_CHECKING:
+    from ..board.service import RequestView
 
 # --- till commands ----------------------------------------------------------------
 
@@ -732,3 +735,101 @@ class DeviceSession(BaseModel):
 
 class PairResponse(DeviceSession):
     token: str  # shown once; the till keeps it, the server only stores its hash
+
+
+# --- request board -----------------------------------------------------------------
+
+RequestStatus = Literal["submitted", "under_review", "planned", "shipped"]
+
+
+class RequestSubmitIn(BaseModel):
+    """A new request for the board. The author is the venue or operator asking for it."""
+
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=200)]
+    body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    author: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+
+
+class RequestStatusIn(BaseModel):
+    status: RequestStatus
+
+
+class RequestOut(BaseModel):
+    id: str
+    title: str
+    body: str
+    author: str
+    status: RequestStatus
+    votes: int  # COUNT of the upvote ledger, never a stored field
+    voted: bool  # whether the caller (this till or the admin) has upvoted it
+    created_at: datetime
+    updated_at: datetime  # moves when the status changes
+
+    @classmethod
+    def of(cls, view: RequestView) -> RequestOut:
+        request = view.request
+        return cls(
+            id=request.id,
+            title=request.title,
+            body=request.body,
+            author=request.author,
+            status=request.status,  # type: ignore[arg-type]
+            votes=view.votes,
+            voted=view.voted,
+            created_at=as_aware(request.created_at),
+            updated_at=as_aware(request.updated_at),
+        )
+
+
+# --- marketing campaigns -----------------------------------------------------------
+
+
+class CampaignIn(BaseModel):
+    """Send a message to the location's opted-in customers on one channel. ``{name}`` in
+    the body is filled per recipient. A dry run selects the audience but sends nothing."""
+
+    channel: Literal["sms", "email"]
+    body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1600)]
+    subject: str | None = Field(default=None, max_length=200)  # email only
+    limit: int | None = Field(default=None, ge=1, le=100_000)
+    dry_run: bool = False
+
+
+class SendResultOut(BaseModel):
+    to: str
+    status: str  # sent | skipped | failed
+    detail: str | None = None
+    external_ref: str | None = None
+    customer_id: str | None = None
+
+
+class CampaignResultOut(BaseModel):
+    channel: str
+    total: int
+    sent: int
+    failed: int
+    skipped: int
+    results: list[SendResultOut]
+
+
+# --- delivery aggregators ---------------------------------------------------------
+
+
+class AggregatorOrderOut(BaseModel):
+    """What the aggregator webhook reports back about one partner order."""
+
+    provider: str
+    external_order_id: str
+    display_id: str | None
+    status: str  # accepted | rejected
+    order_id: str | None  # null for a rejected order (none entered the sales pipeline)
+    order_number: int | None
+    order_state: str | None
+    replayed: bool  # the partner order had already been handled (idempotent)
+
+
+class AggregatorMenuSyncOut(BaseModel):
+    provider: str
+    status: str  # published | queued | skipped
+    item_count: int
+    external_ref: str | None

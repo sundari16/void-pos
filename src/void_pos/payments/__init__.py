@@ -16,7 +16,7 @@ from .provider import (
     RefundRequest,
     RefundResult,
 )
-from .providers import CashProvider, ExternalProvider
+from .providers import CashProvider, ExternalProvider, LoyaltyProvider
 from .service import PaymentOutcome, RefundOutcome, pay_order, refund_payment
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "ChargeRequest",
     "ChargeResult",
     "ExternalProvider",
+    "LoyaltyProvider",
     "PaymentError",
     "PaymentOutcome",
     "PaymentProvider",

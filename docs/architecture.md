@@ -40,10 +40,18 @@ a socket straight to the kitchen printer.
 | `src/void_pos/sync/` | Device push and cursor pull, scoped to a location |
 | `src/void_pos/devices/` | Locations, tills, pairing codes, device tokens |
 | `src/void_pos/menu/` | Catalog: items, modifier groups (min/max choices) and modifiers, daily availability windows (`availability.py`), the till's whole-menu read, spreadsheet imports for items and modifiers; every admin edit recorded in a numbered change history, latest change revertible (`history.py`) |
+| `src/void_pos/online/` | The customer storefront write path: a per-location server-side "web device" drives `place_order`/`pay_order`, so web orders land in the same pipeline. Public `/online/*` API (no token) |
+| `src/void_pos/crm/` | Customer records: find-or-create (match by phone then email), order history |
+| `src/void_pos/loyalty/` | Earn/redeem on the loyalty ledger (balance is `SUM(points_delta)`); redemption is a non-cash tender via a `LoyaltyProvider` |
+| `src/void_pos/marketing/` | Campaign send seam: a `Sender` protocol + no-op `LogSender` in the open core; config-driven Twilio/SendGrid adapters mirror the payments provider seam |
+| `src/void_pos/aggregators/` | Delivery-aggregator order ingestion: the `AggregatorProvider` seam (normalize an order, sync the menu out, accept/reject), an ingestion service that injects an order onto the aggregator channel idempotently, and an open-core mock. Real Uber Eats / DoorDash / Menulog adapters are commercial |
+| `src/void_pos/voice/` | Voice AI order intake: resolve a spoken order against the live menu, confirm it (read-back), and place it on the `voice` channel through `place_order`. `agent.py` is the seam the external voice stack (`livekit-impl` / `cold-caller`) plugs into; the telephony/LLM is out of this repo. See [voice-ordering.md](voice-ordering.md) |
 | `src/void_pos/reporting/`, `export/`, `printing/` | Closeouts, full export (including menu history), ESC/POS tickets |
+| `src/void_pos/board/` | The public feature request board: submit, list with votes, upvote (idempotent), set status |
+| `src/void_pos/delivery/` | On-demand delivery dispatch: a partner-neutral `DeliveryProvider` seam + the open-core `MockCourier`; dispatch a courier for an own-channel delivery order, track its status, cancel it. The Uber Direct adapter is commercial (`uber_direct.py` is the seam + a note) |
 | `src/void_pos/api/` | HTTP layer: auth, schemas, routes, error mapping. Routes stay thin |
 | `src/void_pos/cli.py` | `void-pos` venue setup commands |
-| `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested) |
+| `web/src/lib/` | Till state, ULIDs, retry-safe commands, typed API client (unit tested); `web/src/lib/online/` is the storefront client, redeem maths and remembered-customer store |
 
 ## The write path
 
@@ -181,6 +189,74 @@ plain receipt. `POST /orders/{id}/print-receipt` prints it on the receipt printe
 is configured; otherwise the till shows it to print from the tablet. Printing a receipt
 records nothing.
 
+## The request board
+
+A public feature request board, the visibility the incumbents don't give: operators ask for
+a feature, upvote the ones they want, and see where each one stands — its status and its
+dates — instead of a request vanishing with no trace. It is plain reference data, not part
+of the event-sourced order pipeline, so it is stored directly (like staff or the CRM) in two
+tables: `feature_request` (title, body, author, status, created/updated dates) and
+`feature_request_vote` (one row per `(request, voter)`).
+
+The one data-model rule it keeps is loyalty's: a count is a `SUM` of a ledger, never a
+stored field. The vote count is always `COUNT` of the vote rows, and the unique
+`(request, voter)` makes an **upvote idempotent** — pressing it again records nothing and
+changes no count. The voter is the caller's own identity — a till's device id, or `admin`
+for the venue admin — taken from the token, never the body, so one till counts once.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `POST /board/requests` | any till or admin | submit a request; it starts `submitted` with no votes |
+| `GET /board/requests?sort=top\|new` | any till or admin | the board: most-voted first (`top`, default) or newest (`new`), each with its votes, status, dates and whether the caller has upvoted |
+| `POST /board/requests/{id}/upvote` | any till or admin | upvote; idempotent |
+| `POST /board/requests/{id}/status` | admin | move it to `submitted` / `under_review` / `planned` / `shipped` |
+
+A request's status is one of `submitted`, `under_review`, `planned`, `shipped`; its
+`updated_at` moves when the status changes. The back office has a **Board** screen
+(`/admin/board`) to submit, upvote and (as admin) move status.
+
+## Delivery-aggregator orders
+
+Orders from a delivery platform (Uber Eats, DoorDash, Menulog) land on the existing
+`aggregator` channel and then behave like any order — they list, print, settle, report and
+reconcile the same way. `src/void_pos/aggregators/` holds the seam and the ingestion
+(`provider.py` the `AggregatorProvider` protocol and the partner-neutral shapes;
+`providers.py` the open-core `MockAggregator` plus `build_provider`; `menu.py` the catalog
+snapshot; `service.py` the ingestion). An incoming order is injected through the ordinary
+event log, three events on one virtual device:
+
+1. `order.placed` on the aggregator channel — each item an item line, its modifiers child
+   lines, every name/price/tax/category a snapshot of **what the partner charged** (rule 3),
+   never read live from the catalog, so an order the platform already took is never rejected
+   by a menu edit.
+2. `order.paid`, provider `aggregator`, carrying the **partner's** payment reference in
+   `external_ref` (rule 5) — the platform charged the customer, so the order lands paid.
+3. `order.sent` — fired to the kitchen like any online order.
+
+Three things keep this faithful to the data model:
+
+- **A channel device, not a till.** Every order is attributed to a device (its
+  order-number range, its `seq`). Aggregator orders go through one virtual "Aggregators"
+  device per location, created on first use, never paired, in a reserved high number band
+  (`900001`–`999999`) so its kitchen call-outs never collide with a till's.
+- **Idempotent by the partner's order id.** One `aggregator_order` row per
+  `(provider, external_order_id)` is the tie and the dedupe key: the same webhook twice
+  returns the order already made, never a second one. The row keeps the partner payload for
+  reconciliation against the platform's payout — the partner's id lives *beside* ours, never
+  as a key.
+- **Accept / reject is the partner handshake.** Ingesting confirms the order with the
+  partner (`provider.accept`); `reject_order` declines it before anything enters the sales
+  pipeline (`provider.reject`, the platform refunds the customer), recording a tie row with
+  no order.
+
+`POST /aggregators/{provider}/locations/{id}/orders` is the webhook, gated by a shared
+secret in `X-Void-Aggregator-Secret` (`VOIDPOS_AGGREGATOR_WEBHOOK_SECRET`; unset = off); a
+`/reject` sibling declines, and `/menu` (admin) publishes the catalog. `void-pos
+aggregator-order` and `aggregator-sync-menu` drive the same services from the command line.
+Only the `mock` provider ships in the open core; the real partner adapters implement the
+same protocol against each platform's signed API and live in the commercial layer — the
+same open-core-seam-plus-commercial-adapter split payments uses for Stripe.
+
 ## Who may do what
 
 Every request except `/health*` and `/devices/pair` carries `Authorization: Bearer <token>`.
@@ -211,6 +287,8 @@ will need signed approvals for offline voids.
 | Read menu, orders, receipts, closeout; print a receipt | own location | any |
 | Switch a dish off or on | with a manager's PIN | yes |
 | Edit menu (one item or a bulk edit, all or nothing), export, staff, venue details, `/admin/*` | no (`admin_only`) | yes |
+| Request board: submit, upvote | yes | yes |
+| Request board: set a request's status | no (`admin_only`) | yes |
 
 ## Errors
 
@@ -227,7 +305,7 @@ anything unexpected is a logged 500 `internal_error`.
 | 403 | `till_only`, `admin_only`, `admin_disabled`, `wrong_location`, `foreign_event`, `manager_pin_required`, `wrong_pin` |
 | 404 | `not_found`, `unknown_entity` |
 | 409 | `seq_conflict`, `order_number_used`, `event_id_reused`, `order_exists`, `foreign_order`, `order_closed`, `order_voided`, `order_paid`, `payment_exists`, `range_overlap`, `device_revoked`, `item_unavailable`, `modifier_unavailable`, `changed_since`, `already_reverted`, `in_use`, `group_missing`, `line_exists`, `pin_taken` |
-| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn`, `order_too_long` |
+| 422 | `invalid_request`, `amount_exceeds_balance`, `invalid_amount`, `modifier_not_allowed`, `modifier_selection`, `order_number_out_of_range`, `invalid_timezone`, `invalid_range`, `invalid_cursor`, `invalid_selection_limits`, `invalid_time_window`, `duplicate_item`, `location_mismatch`, `invalid_pin`, `invalid_role`, `invalid_abn`, `order_too_long`, `invalid_status` |
 | 429 | `too_many_attempts` |
 | 503 | `printer_unavailable`, `no_receipt_printer`, `database_unavailable` |
 
@@ -243,7 +321,56 @@ Money is integer cents (AUD by default). Timestamps are stored in UTC. Business 
 the location's timezone, so an order rung up at 8am in Brisbane is on that day's closeout,
 not the previous UTC day's.
 
-## Delivery
+## Online ordering, CRM, loyalty and marketing
+
+The customer storefront is not a second pipeline — it is a second *client* of the one write
+path. Every order needs a device (for the order-number range and the per-device sequence
+that make writes idempotent), so each location gets one server-side **web device** with its
+own reserved high number band (`src/void_pos/online/device.py`). The public `/online/*` API
+(no token) drives that device through the same `place_order` / `pay_order` as a till, so a
+`web` order is validated against the live menu, lands in Open orders, and prints in the
+kitchen like any other. It is idempotent on the browser-minted `order_id`.
+
+A **customer** is captured on the order (`crm`: match by phone then email within the org) —
+reference data like the menu, not an event. **Loyalty** earns and redeems on the ledger
+(`loyalty`): the balance is `SUM(points_delta)`, and a redemption is recorded both as a
+ledger debit and as a non-cash **tender** (a `LoyaltyProvider` payment), so it flows through
+`pay_order` and reduces the balance without a special discount path. **Marketing** (`marketing`)
+is a `Sender` seam with a no-op `LogSender` in the open core and config-driven Twilio/SendGrid
+adapters — the same shape as the payments provider seam, keeping real providers optional and
+out of the write path. Campaigns only ever reach customers who opted in.
+
+## On-demand delivery dispatch
+
+A venue with its own delivery orders (taken on the till, by phone/voice, or through its own
+web storefront — the `pos`, `voice`, `qr` and `web` channels) can send a courier without
+running a driver team. `src/void_pos/delivery/` carries a partner-neutral provider seam —
+`DeliveryProvider.request_delivery` / `get_status` / `cancel` — exactly mirroring the
+payments split: `MockCourier` ships in the open core (fully testable, no network), and the
+real **Uber Direct** adapter (which needs a merchant's partner credentials) implements the
+same protocol in the commercial layer. `uber_direct.py` is the seam plus a note; nothing in
+the core hardcodes a courier's API.
+
+A delivery is keyed on our own ULID, which the dispatching till mints and which doubles as
+the provider's idempotency key, so a retry after a dropped connection returns the same job
+and never puts a second courier on the road — the same rule payments follow, and the
+courier platform's own delivery id lives in `external_ref`, never as the key. The provider
+is asked *before* the row is written (checks run first), so a courier that can't be reached
+leaves nothing recorded and the till simply retries. Dispatch is refused for a non-delivery
+order, an aggregator order (those carry the platform's own courier), a voided order, or an
+order that already has a courier on the way.
+
+Status (`requested → accepted → picked_up → delivered`, or `canceled` / `failed`) moves
+through a small state machine as the courier platform reports it: a repeat is an idempotent
+no-op, a move the machine forbids is refused. A delivery can be cancelled only before the
+courier collects. Surfaces: `POST /orders/{id}/delivery` (dispatch, a till),
+`GET /orders/{id}/delivery` and `GET /deliveries/{id}` (track), `POST /deliveries/{id}/status`
+(the courier callback — admin token in the open core, a verified webhook in a real adapter),
+`POST /deliveries/{id}/cancel`; plus `void-pos delivery-dispatch` / `delivery-status` to
+simulate a dispatch and a callback. The delivery fee is recorded in integer cents; it is
+not folded into the order total in the open core. See `docs/delivery.md`.
+
+## CI and dependencies
 
 - `constraints.txt` pins every Python dependency; CI and the API image install with it.
   `web/package-lock.json` does the same for the web till.

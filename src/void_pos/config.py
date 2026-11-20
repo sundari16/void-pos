@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # How long a till pairing code stays redeemable.
     pairing_code_ttl_minutes: int = Field(default=15, ge=1, le=24 * 60)
 
+    # Voice AI order-taking: the inbound-order seam the external voice stack
+    # (livekit-impl / cold-caller) posts confirmed phone orders into. Off = /voice/* returns 404.
+    voice_ordering_enabled: bool = True
+
     # Kitchen printing (optional; unset = orders project but nothing prints).
     kitchen_printer_host: str | None = None
     kitchen_printer_port: int = Field(default=9100, ge=1, le=65535)
@@ -35,6 +39,52 @@ class Settings(BaseSettings):
     stripe_publishable_key: str | None = None
     # Square: an access token, only to read the item library for the menu import.
     square_access_token: SecretStr | None = None
+    # Delivery-aggregator webhook: a shared secret the incoming request carries in the
+    # X-Void-Aggregator-Secret header. Unset = the webhook is off (503). The real partner
+    # adapters verify each platform's signed webhooks instead; this is the open-core seam.
+    aggregator_webhook_secret: SecretStr | None = None
+
+    # --- online ordering, CRM, loyalty, marketing (open-core activation) -------------
+    # The customer-facing storefront (the public /online/* API). Off = those routes 404.
+    online_ordering_enabled: bool = True
+
+    # Loyalty earn/redeem on the existing ledger. Off until enabled (points neither earned
+    # nor redeemable); the storefront hides points entirely when off.
+    loyalty_enabled: bool = False
+    loyalty_earn_points_per_dollar: int = Field(default=1, ge=0, le=1000)  # points per whole AUD
+    loyalty_redeem_cents_per_point: int = Field(default=1, ge=1, le=100)  # a point's value in cents
+
+    # Campaign senders: "log" (no-op, the open-core default), "twilio" (SMS) or
+    # "sendgrid" (email). The real adapters are config-driven and use the venue's account.
+    marketing_sms_sender: str = "log"
+    marketing_email_sender: str = "log"
+    twilio_account_sid: str | None = None
+    twilio_auth_token: SecretStr | None = None
+    twilio_from_number: str | None = None
+    sendgrid_api_key: SecretStr | None = None
+    sendgrid_from_email: str | None = None
+
+    # On-demand delivery dispatch: send a courier for an own-channel delivery order.
+    # The open core ships the "mock" courier (fully testable, no network); "uber_direct"
+    # is a commercial adapter. Unset env keeps the mock, so self-host and tests just work.
+    delivery_enabled: bool = True
+    delivery_provider: str = "mock"
+
+    # Deputy: the venue's own Deputy install (rostering + timesheets). The endpoint is the
+    # install's base URL (e.g. https://mycompany.au.deputy.com); the token is a permanent
+    # token from that install. Unset = the Deputy sync commands are off.
+    deputy_endpoint: str | None = None
+    deputy_access_token: SecretStr | None = None
+
+    # Xero daily-takings sync (optional). The venue's own Xero app, OAuth2 auth-code flow:
+    # the client id/secret of a Xero app the venue owns, and the redirect URI registered on
+    # it. Unset = off. See docs/self-host.md "Accounting (Xero)".
+    xero_client_id: SecretStr | None = None
+    xero_client_secret: SecretStr | None = None
+    xero_redirect_uri: str = "http://localhost:8000/xero/callback"
+    xero_scopes: str = (
+        "offline_access accounting.transactions accounting.contacts accounting.settings"
+    )
 
     @field_validator(
         "admin_token",
@@ -44,6 +94,16 @@ class Settings(BaseSettings):
         "stripe_secret_key",
         "stripe_publishable_key",
         "square_access_token",
+        "twilio_account_sid",
+        "twilio_auth_token",
+        "twilio_from_number",
+        "sendgrid_api_key",
+        "sendgrid_from_email",
+        "aggregator_webhook_secret",
+        "deputy_endpoint",
+        "deputy_access_token",
+        "xero_client_id",
+        "xero_client_secret",
         mode="before",
     )
     @classmethod
@@ -76,6 +136,18 @@ class Settings(BaseSettings):
     @property
     def stripe_enabled(self) -> bool:
         return self.stripe_secret_key is not None and self.stripe_publishable_key is not None
+
+    @property
+    def aggregator_enabled(self) -> bool:
+        return self.aggregator_webhook_secret is not None
+
+    @property
+    def deputy_enabled(self) -> bool:
+        return self.deputy_endpoint is not None and self.deputy_access_token is not None
+
+    @property
+    def xero_enabled(self) -> bool:
+        return self.xero_client_id is not None and self.xero_client_secret is not None
 
     @property
     def cors_origin_list(self) -> list[str]:

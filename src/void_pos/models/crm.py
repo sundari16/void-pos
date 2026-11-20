@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..ids import new_ulid
@@ -20,3 +20,6 @@ class Customer(Base, TimestampMixin):
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    # Consent to marketing (SMS/email campaigns). The campaign service only ever targets
+    # customers who opted in, whatever audience is asked for.
+    marketing_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
