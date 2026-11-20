@@ -17,6 +17,7 @@ from .api import (
     menu_router,
     online_router,
     router,
+    voice_router,
 )
 from .api.deps import get_session
 from .config import settings
@@ -41,6 +42,7 @@ app.include_router(board_router)
 app.include_router(online_router)
 app.include_router(aggregator_router)
 app.include_router(delivery_router)
+app.include_router(voice_router)
 
 
 @app.get("/health", tags=["health"])

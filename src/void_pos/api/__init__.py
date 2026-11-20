@@ -11,6 +11,7 @@ from .errors import install_error_handlers
 from .menu_routes import router as menu_router
 from .online_routes import router as online_router
 from .routes import router
+from .voice_routes import router as voice_router
 
 __all__ = [
     "admin_router",
@@ -22,4 +23,5 @@ __all__ = [
     "menu_router",
     "online_router",
     "router",
+    "voice_router",
 ]

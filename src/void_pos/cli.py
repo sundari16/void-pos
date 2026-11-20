@@ -22,6 +22,8 @@
     void-pos xero-connect --location <id>   (connect the venue's Xero org; VOIDPOS_XERO_*)
     void-pos xero-accounts --location <id> [--file map.json]   (account-code mapping)
     void-pos xero-push --location <id> --business-date 2026-11-15 [--dry-run]
+    void-pos voice-order --location <id> --phone "+61400000000" \
+        --item "Masala Dosa:2:Extra hot" --item "Mango Lassi"   (simulates an inbound call)
     void-pos print-test
 
 Inside the Docker install, prefix with ``docker compose exec api``. The database must be
@@ -112,6 +114,14 @@ from .rostering import (
     schedule_shift,
 )
 from .staff import create_staff, deactivate_staff, get_staff, list_staff
+from .voice import (
+    DraftItem,
+    DraftModifier,
+    InboundCall,
+    ScriptedVoiceAgent,
+    VoiceOrderDraft,
+    run_voice_call,
+)
 
 TEST_LINES = ("Print test", "மசாலா தோசை")  # Masala Dosa in Tamil: checks the font path
 
@@ -124,6 +134,26 @@ def _range(text: str) -> tuple[int, int]:
         return int(start), int(end)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("use START-END, for example 1000-1999") from exc
+
+
+def _voice_item(spec: str) -> DraftItem:
+    """Parse a ``--item`` spec ``NAME[:QTY[:MOD,MOD,...]]`` into a draft item."""
+    name, _, rest = spec.partition(":")
+    name = name.strip()
+    if not name:
+        raise VoidPosError(f"an --item needs a name: {spec!r}", code="invalid_voice_item")
+    qty_text, _, mods_text = rest.partition(":")
+    qty_text = qty_text.strip()
+    try:
+        quantity = int(qty_text) if qty_text else 1
+    except ValueError as exc:
+        raise VoidPosError(
+            f"the quantity in {spec!r} isn't a number", code="invalid_voice_item"
+        ) from exc
+    if quantity < 1:
+        raise VoidPosError(f"the quantity in {spec!r} must be 1 or more", code="invalid_voice_item")
+    modifiers = [DraftModifier(name=m.strip()) for m in mods_text.split(",") if m.strip()]
+    return DraftItem(name=name, quantity=quantity, modifiers=modifiers)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -328,6 +358,30 @@ def build_parser() -> argparse.ArgumentParser:
     dsync.add_argument("--date", help="push: only this business date, YYYY-MM-DD (default: all)")
     dsync.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
 
+    vo = sub.add_parser(
+        "voice-order",
+        help="simulate an inbound voice order end to end (no telephony; mocks the voice stack)",
+    )
+    vo.add_argument("--location", required=True, help="location id")
+    vo.add_argument("--phone", required=True, help="the caller's phone number")
+    vo.add_argument("--name", help="the caller's name")
+    vo.add_argument(
+        "--fulfillment", choices=("pickup", "delivery"), default="pickup"
+    )
+    vo.add_argument(
+        "--item",
+        required=True,
+        action="append",
+        metavar="NAME[:QTY[:MOD,MOD]]",
+        help='an item the caller asked for; repeat for more, e.g. --item "Masala Dosa:2:Extra hot"',
+    )
+    vo.add_argument("--address", help="delivery address (for --fulfillment delivery)")
+    vo.add_argument("--note", help="a note for the kitchen")
+    vo.add_argument(
+        "--decline",
+        action="store_true",
+        help="the caller says no at the read-back; nothing is placed",
+    )
     pt = sub.add_parser("print-test", help="send a test ticket to the kitchen printer")
     pt.add_argument("--host", help="defaults to VOIDPOS_KITCHEN_PRINTER_HOST")
     pt.add_argument("--port", type=int, help="defaults to VOIDPOS_KITCHEN_PRINTER_PORT (9100)")
@@ -522,6 +576,31 @@ def run(session: Session, args: argparse.Namespace, *, pairing_ttl: timedelta) -
         lines += [f"  + {name}" for name in items.created + loaded.created]
         lines += [f"  ~ {name}" for name in items.updated + loaded.updated]
         lines += [f"  ! {note}" for note in menu.notes]
+        return "\n".join(lines)
+    if args.command == "voice-order":
+        get_location(session, args.location)
+        draft = VoiceOrderDraft(
+            items=[_voice_item(spec) for spec in args.item],
+            customer_phone=args.phone,
+            fulfillment=args.fulfillment,
+            customer_name=args.name,
+            note=args.note,
+            delivery_address=args.address,
+            order_id=new_ulid(),
+        )
+        agent = ScriptedVoiceAgent(draft, accept=not args.decline)
+        call = InboundCall(location_id=args.location, from_number=args.phone)
+        call_result = run_voice_call(session, agent, call)
+        lines = [f"Read-back: {call_result.confirmation.read_back}"]
+        if call_result.placed and call_result.order is not None:
+            order = call_result.order
+            lines.append(
+                f"Placed voice order #{order.order_number} "
+                f"({order.state}) on the {order.channel} channel."
+            )
+            lines.append(f"Order id: {order.id}")
+        else:
+            lines.append("The caller declined at the read-back; nothing was placed.")
         return "\n".join(lines)
     if args.command == "import-modifiers":
         get_location(session, args.location)

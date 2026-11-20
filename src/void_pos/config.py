@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # How long a till pairing code stays redeemable.
     pairing_code_ttl_minutes: int = Field(default=15, ge=1, le=24 * 60)
 
+    # Voice AI order-taking: the inbound-order seam the external voice stack
+    # (livekit-impl / cold-caller) posts confirmed phone orders into. Off = /voice/* returns 404.
+    voice_ordering_enabled: bool = True
+
     # Kitchen printing (optional; unset = orders project but nothing prints).
     kitchen_printer_host: str | None = None
     kitchen_printer_port: int = Field(default=9100, ge=1, le=65535)
