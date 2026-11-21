@@ -271,8 +271,9 @@ request; the void event or the menu change records who approved it. Wrong PINs a
 per till (5 in 5 minutes, then 429). A location with no manager needs no PIN, so add one
 before going live. The rule holds on every path: an `order.voided` event, online or from
 sync, must name an active manager at the location by id and name, or it is rejected
-(`manager_approval_required`). A till can't check a PIN offline yet; the React Native till
-will need signed approvals for offline voids.
+(`manager_approval_required`). A till can't check a PIN offline yet, so the mobile till
+keeps voids, discounts, refunds and taking off sent items for when the server is back;
+approving them offline needs signed approvals.
 
 - **Venue admin**: `VOIDPOS_ADMIN_TOKEN` (24+ characters, compared in constant time).
   Creates locations and tills, issues pairing codes, revokes tills, edits the menu, exports.
@@ -378,14 +379,19 @@ not folded into the order total in the open core. See `docs/delivery.md`.
 - CI (`.github/workflows/pr-checks.yml`): ruff, mypy and pytest on SQLite **and**
   PostgreSQL; `alembic upgrade`, `check` (models match migrations), `downgrade` and
   `upgrade` again; web typecheck, unit tests and build; then the full Docker stack with the
-  smoke test through the web proxy and the API, a backup check and the setup CLI.
+  smoke test through the web proxy and the API, a backup check and the setup CLI; the
+  mobile till's lib sync check, typecheck, lint, tests and `expo-doctor` when `mobile/` or
+  `web/src/lib/` changes. `.github/workflows/mobile-android.yml` builds an Android APK.
 - `.githooks/pre-push` runs the fast subset locally.
 
 ## Not built yet
 
-- **Offline tills.** The web till needs the venue server. The target is the React Native
-  till: an on-device SQLite store with an outbox draining through `/sync/push` (the server
-  side exists), direct printing, and hub-mode relay between tills when the internet is down.
+- **Offline tills, the rest of it.** The React Native till (`mobile/`) now keeps working
+  without the server: an on-device SQLite outbox drained through `/sync/push`, a pull
+  through `/sync/pull`, and the server's projection and money math ported to TypeScript
+  (see `mobile/README.md`). Still to come: direct printing from the till, and hub-mode relay
+  between tills when the internet is down ([hub-mode.md](hub-mode.md)). The web till still
+  needs the venue server.
 - **Hosting.** GCP is deferred until the project is commercial. Moving there means a
   print agent on a venue device (the cloud can't reach a LAN printer) and per-org limits
   on top of the location scoping that already exists.

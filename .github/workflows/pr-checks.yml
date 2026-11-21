@@ -14,6 +14,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    # Which parts of the repo a change touches, so a job can skip work it doesn't cover.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mobile: ${{ steps.filter.outputs.mobile }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            mobile:
+              - "mobile/**"
+              - "web/src/lib/**"
+              - ".github/workflows/pr-checks.yml"
+
   python:
     runs-on: ubuntu-latest
     services:
@@ -73,6 +92,31 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  mobile:
+    # The React Native till: its copy of the shared web lib, types, lint, unit tests and
+    # Expo's dependency checks. Skipped (reported as passing) when nothing it covers changed.
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - name: Shared lib matches web/src/lib
+        run: npm run check-lib
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - name: Expo dependency checks
+        run: npx expo-doctor
 
   venue-stack:
     # The self-host install as a venue runs it: build the images, start the stack, and

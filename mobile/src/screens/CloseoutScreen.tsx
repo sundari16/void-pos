@@ -4,7 +4,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
-import { api, ApiError } from "../lib/api";
+import { ApiError } from "../lib/api";
+import { api } from "../net";
 import { friendlyError } from "../lib/commands";
 import { formatCents } from "../lib/money";
 import { providerLabel } from "../lib/payments";

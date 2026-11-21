@@ -3,11 +3,17 @@
 import type { ReactNode } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type StyleProp,
+  type TextInputProps,
   type TextStyle,
   type ViewStyle,
 } from "react-native";
@@ -113,7 +119,93 @@ export function Muted({ children, style }: { children: ReactNode; style?: StyleP
   return <Text style={[{ color: theme.colors.muted, fontSize: 13 }, style]}>{children}</Text>;
 }
 
+/** A bottom sheet over the till: a title, a close button, and its content. */
+export function Sheet({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.backdrop} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel="Close" />
+        <View style={styles.sheet} accessibilityLabel={title}>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>{title}</Text>
+            <Pressable onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" hitSlop={10}>
+              <Text style={styles.sheetClose}>×</Text>
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.sheetBody} keyboardShouldPersistTaps="handled">
+            {children}
+          </ScrollView>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+/** A card over the current view (not a native modal, so it can follow a sheet closing). */
+export function Overlay({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <View style={[StyleSheet.absoluteFill, styles.overlay]}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
+      <View style={styles.overlayCard} accessibilityLabel={title}>
+        <Text style={styles.sheetTitle}>{title}</Text>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+export function Input({ style, ...props }: TextInputProps) {
+  return <TextInput placeholderTextColor={theme.colors.muted} style={[styles.input, style]} {...props} />;
+}
+
+export function ErrorText({ children }: { children: ReactNode }) {
+  return <Text style={{ color: theme.colors.danger, fontSize: 13 }}>{children}</Text>;
+}
+
 const styles = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+  overlay: { backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center", padding: theme.space(6) },
+  overlayCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.space(4),
+    gap: theme.space(3),
+  },
+  sheet: {
+    maxHeight: "88%",
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.radius.lg,
+    borderTopRightRadius: theme.radius.lg,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: theme.space(4),
+    paddingTop: theme.space(4),
+    paddingBottom: theme.space(2),
+  },
+  sheetTitle: { fontSize: 18, fontWeight: "700", color: theme.colors.text, flex: 1 },
+  sheetClose: { fontSize: 28, color: theme.colors.muted, paddingHorizontal: theme.space(2) },
+  sheetBody: { padding: theme.space(4), paddingTop: theme.space(2), gap: theme.space(3) },
+  input: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.bg,
+    paddingHorizontal: theme.space(3),
+    paddingVertical: theme.space(3),
+    fontSize: 15,
+    color: theme.colors.text,
+  },
   button: {
     minHeight: 48,
     paddingHorizontal: theme.space(4),

@@ -1,17 +1,19 @@
-// The order ticket: the draft being built, then the placed order with send-to-kitchen and
-// payment. Mirrors the aside in web/src/app/page.tsx and web/src/components/OrderTicket.tsx,
-// trimmed to the mobile till's flow (place → send → cash / card-on-terminal → new order).
-// Money stays in integer cents; amounts are only formatted for display.
+// The order ticket: the draft being built, then the placed order with send-to-kitchen,
+// payment (cash, card on the terminal, card on screen through Stripe; splits and tips),
+// discounts and surcharges, taking items off, voids and refunds. Mirrors the aside in
+// web/src/app/page.tsx. Money stays in integer cents; amounts are only formatted for display.
 
-import { useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import type { NewAdjustment } from "../flows";
 import { formatCents, formatDelta } from "../lib/money";
 import { itemSubtotalCents, orderLineCount, orderTotalCents, type DraftItem } from "../lib/order";
-import { centsToInput, parseDollars, providerLabel, terminalRef, type PayMethod } from "../lib/payments";
-import { isUnsettled, placedItemCents, placedItems, sendLabel } from "../lib/placed";
-import type { KitchenResponse, OrderResponse } from "../lib/types";
+import { providerLabel, type PayMethod } from "../lib/payments";
+import { isUnsettled, placedItemCents, placedItems, refundable, sendLabel } from "../lib/placed";
+import type { KitchenResponse, OrderLineOut, OrderResponse, VoidResponse } from "../lib/types";
 import { theme } from "../theme";
 import { Badge, Banner, Button, Chip, Muted } from "../ui";
+import { AdjustPanel } from "./AdjustPanel";
+import { PaymentPanel } from "./PaymentPanel";
 
 const FULFILLMENTS = ["dine_in", "pickup", "delivery"] as const;
 
@@ -21,52 +23,63 @@ export interface TicketHandlers {
   onPlace: () => void;
   onAddToOrder: () => void;
   onSend: () => void;
-  onPay: (method: PayMethod, amountCents: number, externalRef?: string) => void;
+  onPay: (method: PayMethod, amountCents: number, externalRef?: string, tipCents?: number) => void;
+  /** Absent when Stripe isn't set up on the server. */
+  onCard?: (amountCents: number, tipCents: number) => void;
+  onRemoveLine: (line: OrderLineOut) => void;
+  onAddAdjustment: (adj: NewAdjustment) => void;
+  onRemoveAdjustment: (adjustmentId: string) => void;
+  onVoid: () => void;
+  onRefund: () => void;
   onNewOrder: () => void;
 }
 
+export interface TicketState {
+  draft: DraftItem[];
+  order: OrderResponse | null;
+  kitchen: KitchenResponse | undefined;
+  /** The last send was queued: it prints when the server is back. */
+  kitchenQueued: boolean;
+  voided: VoidResponse | undefined;
+  editable: boolean;
+  busy: string | null;
+  actionError: string | null;
+  unconfirmed: boolean;
+  retryMethod: PayMethod | null;
+  retryVoid: boolean;
+  /** This order has changes the server hasn't had yet. */
+  queuedHere: boolean;
+  offline: boolean;
+  holidaySurchargeBp: number | null | undefined;
+  fulfillment: string;
+  table: string;
+  nextOrderNumber: number;
+}
+
 export function TicketScreen({
-  draft,
-  order,
-  kitchen,
-  editable,
-  busy,
-  actionError,
-  unconfirmed,
-  retryMethod,
-  fulfillment,
-  table,
-  nextOrderNumber,
+  state,
   onFulfillment,
   onTable,
   handlers,
 }: {
-  draft: DraftItem[];
-  order: OrderResponse | null;
-  kitchen: KitchenResponse | undefined;
-  editable: boolean;
-  busy: boolean;
-  actionError: string | null;
-  unconfirmed: boolean;
-  retryMethod: PayMethod | null;
-  fulfillment: string;
-  table: string;
-  nextOrderNumber: number;
+  state: TicketState;
   onFulfillment: (f: string) => void;
   onTable: (t: string) => void;
   handlers: TicketHandlers;
 }) {
+  const { draft, order, kitchen, editable, actionError, unconfirmed, fulfillment, table } = state;
+  const busy = state.busy !== null;
   const draftTotal = orderTotalCents(draft);
   const draftCount = orderLineCount(draft);
+  const unsettled = order !== null && isUnsettled(order);
+  const canChange = unsettled && draft.length === 0 && !busy && !state.retryVoid;
 
   return (
     <View style={styles.fill}>
       <View style={styles.header}>
         <Text style={styles.heading}>
           {order?.table_label ? `Table ${order.table_label} ` : "Order "}
-          <Text style={{ color: theme.colors.muted }}>
-            #{order?.order_number ?? nextOrderNumber}
-          </Text>
+          <Text style={{ color: theme.colors.muted }}>#{order?.order_number ?? state.nextOrderNumber}</Text>
         </Text>
         {order ? <Badge state={order.state} /> : null}
       </View>
@@ -97,7 +110,7 @@ export function TicketScreen({
       ) : null}
 
       <ScrollView contentContainerStyle={styles.lines} keyboardShouldPersistTaps="handled">
-        {order ? <PlacedLines order={order} /> : null}
+        {order ? <PlacedLines order={order} onRemove={canChange ? handlers.onRemoveLine : undefined} /> : null}
         {order && draft.length > 0 ? <Text style={styles.addingLabel}>Adding</Text> : null}
         {order === null || draft.length > 0 ? (
           <DraftLines
@@ -107,9 +120,29 @@ export function TicketScreen({
             onRemove={handlers.onRemove}
           />
         ) : null}
+        {order && unsettled && draft.length === 0 ? (
+          <View style={{ marginTop: theme.space(3) }}>
+            <AdjustPanel
+              adjustments={order.adjustments}
+              holidaySurchargeBp={state.holidaySurchargeBp}
+              busy={busy}
+              offline={state.offline}
+              onAdd={handlers.onAddAdjustment}
+              onRemove={handlers.onRemoveAdjustment}
+            />
+          </View>
+        ) : null}
+        {order && !unsettled
+          ? order.adjustments.map((a) => (
+              <View key={a.id} style={styles.adjRow}>
+                <Muted>{a.label ?? (a.kind === "discount" ? "Discount" : "Surcharge")}</Muted>
+                <Muted>{formatCents(a.amount_cents)}</Muted>
+              </View>
+            ))
+          : null}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <ScrollView style={styles.footerScroll} contentContainerStyle={styles.footer} keyboardShouldPersistTaps="handled">
         <View style={styles.totalRow}>
           {order ? (
             <>
@@ -118,7 +151,7 @@ export function TicketScreen({
                 {draft.length > 0 ? ` · adding ${formatCents(draftTotal)}` : ""}
               </Muted>
               <Text style={styles.total}>
-                {order.balance_cents > 0 || isUnsettled(order)
+                {order.balance_cents > 0 || unsettled
                   ? `${formatCents(order.balance_cents)} owing`
                   : formatCents(order.total_cents)}
               </Text>
@@ -134,11 +167,24 @@ export function TicketScreen({
         </View>
 
         {unconfirmed ? (
-          <Muted style={{ fontSize: 12 }}>
-            Held as it is until the server confirms it; tap again to retry.
-          </Muted>
+          <Muted style={{ fontSize: 12 }}>Held as it is until the server confirms it; tap again to retry.</Muted>
+        ) : null}
+        {state.queuedHere ? (
+          <Banner kind="info">Saved on this till. It reaches the server as soon as the till is back online.</Banner>
         ) : null}
         {actionError ? <Banner kind="error">{actionError}</Banner> : null}
+
+        {state.voided ? (
+          <Banner kind="error">
+            {`Voided. ${
+              state.voided.printed
+                ? "A void ticket went to the kitchen."
+                : order?.lines.some((l) => l.sent) && !state.voided.replayed
+                  ? "No void ticket printed: tell the kitchen."
+                  : ""
+            }`}
+          </Banner>
+        ) : null}
 
         {order && order.payments.length > 0 ? (
           <View style={styles.paidBox}>
@@ -148,13 +194,24 @@ export function TicketScreen({
                 {p.tip_cents > 0 ? ` · tip ${formatCents(p.tip_cents)}` : ""}
               </Text>
             ))}
+            {order.refunds.map((r) => (
+              <Text key={r.refund_id} style={[styles.paidText, { color: theme.colors.danger }]}>
+                Refunded {formatCents(r.amount_cents)} · {providerLabel(r.provider)} · {r.reason}
+              </Text>
+            ))}
             <Text style={[styles.paidText, { fontWeight: "700" }]}>
-              {order.balance_cents > 0 ? `${formatCents(order.balance_cents)} still owing` : "Paid in full"}
+              {order.state === "refunded"
+                ? "Refunded in full"
+                : order.balance_cents > 0
+                  ? `${formatCents(order.balance_cents)} still owing`
+                  : "Paid in full"}
             </Text>
           </View>
         ) : null}
 
-        {kitchen ? (
+        {state.kitchenQueued ? (
+          <Muted style={{ fontSize: 12 }}>Kitchen send saved: the ticket prints when the till is back online.</Muted>
+        ) : kitchen ? (
           <Muted style={{ fontSize: 12 }}>
             {kitchen.replayed
               ? "Already sent to the kitchen."
@@ -168,43 +225,69 @@ export function TicketScreen({
 
         {!order ? (
           <Button
-            title={busy ? "Placing…" : "Place order"}
+            title={state.busy === "place" ? "Placing…" : "Place order"}
             onPress={handlers.onPlace}
             disabled={draft.length === 0}
-            loading={busy}
+            loading={state.busy === "place"}
           />
         ) : (
           <View style={{ gap: theme.space(2) }}>
             {draft.length > 0 ? (
               <Button
-                title={busy ? "Adding…" : `Add ${draftCount} item${draftCount === 1 ? "" : "s"} to the order`}
+                title={state.busy === "add" ? "Adding…" : `Add ${draftCount} item${draftCount === 1 ? "" : "s"} to the order`}
                 onPress={handlers.onAddToOrder}
-                loading={busy}
+                loading={state.busy === "add"}
               />
             ) : null}
             {order.state !== "voided" ? (
               <Button
-                title={busy ? "Sending…" : sendLabel(order)}
+                title={state.busy === "kitchen" ? "Sending…" : sendLabel(order)}
                 onPress={handlers.onSend}
-                disabled={draft.length > 0}
+                disabled={draft.length > 0 || busy}
                 variant={order.unsent_lines > 0 ? "outline" : "ghost"}
               />
             ) : null}
-            {isUnsettled(order) && draft.length === 0 ? (
-              <PaymentSection
+            {unsettled && !state.retryVoid && draft.length === 0 ? (
+              <PaymentPanel
                 balanceCents={order.balance_cents}
-                busy={busy}
-                retryMethod={retryMethod}
+                busy={state.busy === "pay" || state.busy === "card"}
+                retryMethod={state.retryMethod}
+                offline={state.offline}
                 onPay={handlers.onPay}
+                onCard={handlers.onCard}
               />
             ) : null}
-            {isUnsettled(order) && draft.length > 0 ? (
+            {unsettled && draft.length > 0 ? (
               <Muted style={{ fontSize: 12 }}>Add the new items before taking payment.</Muted>
             ) : null}
-            <Button title="New order" onPress={handlers.onNewOrder} variant="ghost" />
+            {unsettled && order.payments.length === 0 && !state.retryMethod ? (
+              <Button
+                title={
+                  state.busy === "void"
+                    ? "Voiding…"
+                    : state.retryVoid
+                      ? "Retry void"
+                      : state.offline
+                        ? "Void order (needs the server)"
+                        : "Void order"
+                }
+                onPress={handlers.onVoid}
+                disabled={busy || (state.offline && !state.retryVoid)}
+                variant="danger"
+              />
+            ) : null}
+            {order.state === "paid" && refundable(order).length > 0 ? (
+              <Button
+                title={state.offline ? "Refund (needs the server)" : "Refund"}
+                onPress={handlers.onRefund}
+                disabled={busy || state.offline}
+                variant="danger"
+              />
+            ) : null}
+            <Button title="New order" onPress={handlers.onNewOrder} variant="ghost" disabled={busy} />
           </View>
         )}
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -268,9 +351,9 @@ function QtyButton({ label, onPress, name }: { label: string; onPress: () => voi
   );
 }
 
-function PlacedLines({ order }: { order: OrderResponse }) {
+function PlacedLines({ order, onRemove }: { order: OrderResponse; onRemove?: (line: OrderLineOut) => void }) {
   const items = placedItems(order.lines);
-  if (items.length === 0) return null;
+  if (items.length === 0) return <Muted style={styles.hint}>Every item has been taken off.</Muted>;
   return (
     <View>
       {items.map(({ line, modifiers }) => (
@@ -291,147 +374,13 @@ function PlacedLines({ order }: { order: OrderResponse }) {
             </View>
             <Text style={styles.amount}>{formatCents(placedItemCents({ line, modifiers }))}</Text>
           </View>
+          {onRemove ? (
+            <Pressable onPress={() => onRemove(line)} accessibilityRole="button" accessibilityLabel={`Take off ${line.name}`}>
+              <Text style={[styles.remove, { marginTop: 6 }]}>Take off</Text>
+            </Pressable>
+          ) : null}
         </View>
       ))}
-    </View>
-  );
-}
-
-function PaymentSection({
-  balanceCents,
-  busy,
-  retryMethod,
-  onPay,
-}: {
-  balanceCents: number;
-  busy: boolean;
-  retryMethod: PayMethod | null;
-  onPay: (method: PayMethod, amountCents: number, externalRef?: string) => void;
-}) {
-  const [amount, setAmount] = useState(centsToInput(balanceCents));
-  const [lastBalance, setLastBalance] = useState(balanceCents);
-  const [cardOpen, setCardOpen] = useState(false);
-  const [cardRef, setCardRef] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  // A payment went through: move the amount on to whatever is left.
-  if (balanceCents !== lastBalance) {
-    setLastBalance(balanceCents);
-    setAmount(centsToInput(balanceCents));
-    setCardOpen(false);
-    setCardRef("");
-    setError(null);
-  }
-
-  function checkedAmount(): number | null {
-    const parsed = parseDollars(amount);
-    if ("error" in parsed) {
-      setError(parsed.error);
-      return null;
-    }
-    if (parsed.cents > balanceCents) {
-      setError(`That's more than the ${formatCents(balanceCents)} owing.`);
-      return null;
-    }
-    if (parsed.cents === 0 && balanceCents > 0) {
-      setError("Enter an amount above zero.");
-      return null;
-    }
-    setError(null);
-    return parsed.cents;
-  }
-
-  if (retryMethod) {
-    return (
-      <Button
-        title={busy ? "Paying…" : `Retry ${retryMethod === "cash" ? "cash" : "card"} payment`}
-        onPress={() => onPay(retryMethod, 0)}
-        loading={busy}
-      />
-    );
-  }
-
-  return (
-    <View style={styles.payBox}>
-      <View style={styles.payHeader}>
-        <Text style={styles.payLabel}>Amount</Text>
-        <Muted>Owing {formatCents(balanceCents)}</Muted>
-      </View>
-      <View style={styles.amountField}>
-        <Text style={styles.dollar}>$</Text>
-        <TextInput
-          value={amount}
-          onChangeText={(t) => {
-            setAmount(t);
-            setError(null);
-          }}
-          keyboardType="decimal-pad"
-          accessibilityLabel="Amount to pay"
-          style={styles.amountInput}
-        />
-      </View>
-      {error ? <Text style={styles.payError}>{error}</Text> : null}
-
-      {cardOpen ? (
-        <View style={{ gap: theme.space(2) }}>
-          <Text style={styles.payLabel}>Terminal receipt or approval number</Text>
-          <TextInput
-            value={cardRef}
-            onChangeText={setCardRef}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            style={styles.refInput}
-            accessibilityLabel="Terminal reference"
-          />
-          <View style={styles.payButtons}>
-            <Button
-              title={busy ? "Recording…" : "Record card payment"}
-              onPress={() => {
-                const cents = checkedAmount();
-                if (cents === null) return;
-                const checked = terminalRef(cardRef);
-                if ("error" in checked) {
-                  setError(checked.error);
-                  return;
-                }
-                onPay("external", cents, checked.ref);
-              }}
-              disabled={!cardRef.trim()}
-              loading={busy}
-              style={{ flex: 1 }}
-            />
-            <Button
-              title="Cancel"
-              onPress={() => {
-                setCardOpen(false);
-                setCardRef("");
-              }}
-              variant="outline"
-              style={{ flex: 1 }}
-            />
-          </View>
-        </View>
-      ) : (
-        <View style={styles.payButtons}>
-          <Button
-            title={busy ? "Paying…" : "Pay cash"}
-            onPress={() => {
-              const cents = checkedAmount();
-              if (cents !== null) onPay("cash", cents);
-            }}
-            loading={busy}
-            style={{ flex: 1 }}
-          />
-          <Button
-            title="Card on terminal"
-            onPress={() => {
-              if (checkedAmount() !== null) setCardOpen(true);
-            }}
-            variant="outline"
-            style={{ flex: 1 }}
-          />
-        </View>
-      )}
     </View>
   );
 }
@@ -495,13 +444,15 @@ const styles = StyleSheet.create({
   },
   qtyValue: { minWidth: 20, textAlign: "center", fontSize: 15, color: theme.colors.text },
   remove: { fontSize: 14, color: theme.colors.danger },
-  footer: {
+  adjRow: { flexDirection: "row", justifyContent: "space-between", marginTop: theme.space(2) },
+  footerScroll: {
+    flexGrow: 0,
+    maxHeight: "60%",
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
-    padding: theme.space(4),
-    gap: theme.space(3),
     backgroundColor: theme.colors.surface,
   },
+  footer: { padding: theme.space(4), gap: theme.space(3) },
   totalRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" },
   total: { fontSize: 18, fontWeight: "700", color: theme.colors.text },
   paidBox: {
@@ -511,37 +462,4 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   paidText: { fontSize: 13, color: theme.colors.success },
-  payBox: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    padding: theme.space(3),
-    gap: theme.space(2),
-  },
-  payHeader: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" },
-  payLabel: { fontSize: 14, fontWeight: "600", color: theme.colors.text },
-  amountField: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.bg,
-    paddingHorizontal: theme.space(3),
-  },
-  dollar: { color: theme.colors.muted, fontSize: 16 },
-  amountInput: { flex: 1, paddingVertical: theme.space(3), paddingHorizontal: 4, fontSize: 16, fontWeight: "600", color: theme.colors.text },
-  payError: { fontSize: 13, color: theme.colors.danger },
-  payButtons: { flexDirection: "row", gap: theme.space(2) },
-  refInput: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.bg,
-    paddingHorizontal: theme.space(3),
-    paddingVertical: theme.space(3),
-    fontSize: 15,
-    color: theme.colors.text,
-    fontFamily: "monospace",
-  },
 });

@@ -1,7 +1,7 @@
 {
   "name": "void-pos-mobile",
   "version": "0.1.0",
-  "description": "Void POS mobile till — React Native (Expo) in-person order, kitchen send, cash / card-on-terminal payment and shift closeout.",
+  "description": "Void POS mobile till — React Native (Expo), offline-first: orders, kitchen, cash / card-on-terminal / Stripe card, discounts, voids, refunds and shift closeout.",
   "main": "index.ts",
   "private": true,
   "scripts": {
@@ -11,12 +11,18 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "jest"
+    "test": "jest",
+    "sync-lib": "node scripts/sync-lib.mjs",
+    "check-lib": "node scripts/sync-lib.mjs --check"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@stripe/stripe-react-native": "0.81.0",
     "expo": "~58.0.26",
+    "expo-build-properties": "~58.0.12",
+    "expo-sqlite": "~58.0.18",
     "expo-status-bar": "~58.0.5",
+    "expo-system-ui": "~58.0.7",
     "react": "19.3.0",
     "react-native": "0.88.1",
     "react-native-get-random-values": "^2.1.0"
@@ -32,6 +38,9 @@
   },
   "jest": {
     "preset": "jest-expo",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "setupFiles": [
+      "./jest.setup.js"
+    ]
   }
 }

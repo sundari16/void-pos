@@ -1,92 +1,111 @@
+// Generated from web/src/lib/commands.test.ts by mobile/scripts/sync-lib.mjs — edit the web copy.
 import { ApiError } from "./api";
-import { isRetryable, runCommand, type Pending } from "./commands";
+import { friendlyError, isRetryable, runCommand, type Pending } from "./commands";
 import type { CommandIn } from "./types";
 
-type Body = CommandIn;
-
-function pending(): Pending<Body> {
-  return { current: null };
+function setup(responses: (() => unknown)[]) {
+  const pending: Pending<CommandIn> = { current: null };
+  let built = 0;
+  const sent: CommandIn[] = [];
+  const onUnauthorized = jest.fn();
+  const seqAfter = jest.fn((last: number) => last + 1);
+  const opts = {
+    pending,
+    build: () => ({ event_id: `E${(built += 1)}`, seq: built }),
+    send: async (body: CommandIn) => {
+      sent.push(body);
+      const next = responses.shift();
+      if (!next) throw new Error("no response queued");
+      return next();
+    },
+    seqAfter,
+    onUnauthorized,
+  };
+  return { opts, pending, sent, onUnauthorized, seqAfter };
 }
+
+const fail = (err: ApiError) => () => {
+  throw err;
+};
 
 describe("runCommand", () => {
   it("clears the pending body once the server answers", async () => {
-    const p = pending();
-    let built = 0;
-    const result = await runCommand<Body, { seq: number }>({
-      pending: p,
-      build: () => {
-        built += 1;
-        return { event_id: "e", seq: 9 };
-      },
-      send: async (body) => ({ seq: body.seq }),
-      seqAfter: (last) => last + 1,
-      onUnauthorized: () => {},
-    });
-    expect(result).toEqual({ seq: 9 });
-    expect(built).toBe(1);
-    expect(p.current).toBeNull();
+    const { opts, pending } = setup([() => "ok"]);
+    await expect(runCommand(opts)).resolves.toBe("ok");
+    expect(pending.current).toBeNull();
   });
 
-  it("keeps the pending body after a retryable failure, so a retry resends the same ids", async () => {
-    const p = pending();
-    await expect(
-      runCommand<Body, unknown>({
-        pending: p,
-        build: () => ({ event_id: "e", seq: 1 }),
-        send: async () => {
-          throw new ApiError(0, "network_error", "offline");
-        },
-        seqAfter: (last) => last + 1,
-        onUnauthorized: () => {},
-      }),
-    ).rejects.toBeInstanceOf(ApiError);
-    expect(p.current).not.toBeNull();
+  it("keeps the same ids after a dropped connection, so the retry replays", async () => {
+    const { opts, pending, sent } = setup([
+      fail(new ApiError(0, "network_error", "offline")),
+      () => "ok",
+    ]);
+    await expect(runCommand(opts)).rejects.toThrow(ApiError);
+    expect(pending.current).not.toBeNull();
+    await runCommand(opts);
+    expect(sent[0]).toEqual(sent[1]);
   });
 
-  it("resyncs the seq and resends once on seq_conflict", async () => {
-    const p = pending();
-    let calls = 0;
-    const result = await runCommand<Body, { seq: number }>({
-      pending: p,
-      build: () => ({ event_id: "e", seq: 2 }),
-      send: async (body) => {
-        calls += 1;
-        if (calls === 1) throw new ApiError(409, "seq_conflict", "stale", { last_seq: 5 });
-        return { seq: body.seq };
-      },
-      seqAfter: (last) => last + 1,
-      onUnauthorized: () => {},
-    });
-    expect(result).toEqual({ seq: 6 });
-    expect(p.current).toBeNull();
+  it("keeps the ids after a 5xx (printer down) too", async () => {
+    const { opts, pending } = setup([fail(new ApiError(503, "printer_unavailable", "down"))]);
+    await expect(runCommand(opts)).rejects.toThrow();
+    expect(pending.current?.event_id).toBe("E1");
   });
 
-  it("calls onUnauthorized and drops the body on 401", async () => {
-    const p = pending();
-    let unauthorized = false;
-    await expect(
-      runCommand<Body, unknown>({
-        pending: p,
-        build: () => ({ event_id: "e", seq: 1 }),
-        send: async () => {
-          throw new ApiError(401, "invalid_token", "revoked");
-        },
-        seqAfter: (last) => last + 1,
-        onUnauthorized: () => {
-          unauthorized = true;
-        },
-      }),
-    ).rejects.toBeInstanceOf(ApiError);
-    expect(unauthorized).toBe(true);
-    expect(p.current).toBeNull();
+  it("drops the body after a final 4xx", async () => {
+    const { opts, pending } = setup([fail(new ApiError(409, "order_closed", "paid"))]);
+    await expect(runCommand(opts)).rejects.toThrow();
+    expect(pending.current).toBeNull();
+  });
+
+  it("resyncs once on a seq conflict, keeping the event id", async () => {
+    const { opts, sent, seqAfter } = setup([
+      fail(new ApiError(409, "seq_conflict", "used", { last_seq: 41 })),
+      () => "ok",
+    ]);
+    await expect(runCommand(opts)).resolves.toBe("ok");
+    expect(seqAfter).toHaveBeenCalledWith(41);
+    expect(sent[1]).toEqual({ event_id: sent[0].event_id, seq: 42 });
+  });
+
+  it("lets a command repair its own body once (a reused order number)", async () => {
+    const { opts, sent } = setup([
+      fail(new ApiError(409, "order_number_used", "taken", { next_order_number: 1005 })),
+      () => "ok",
+    ]);
+    const repair = jest.fn((err: ApiError, body: CommandIn) =>
+      err.code === "order_number_used" ? { ...body, seq: 99 } : null,
+    );
+    await expect(runCommand({ ...opts, repair })).resolves.toBe("ok");
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(sent[1]).toEqual({ event_id: sent[0].event_id, seq: 99 });
+  });
+
+  it("gives up after a second seq conflict", async () => {
+    const conflict = new ApiError(409, "seq_conflict", "used", { last_seq: 41 });
+    const { opts } = setup([fail(conflict), fail(conflict)]);
+    await expect(runCommand(opts)).rejects.toBe(conflict);
+  });
+
+  it("reports a revoked token", async () => {
+    const { opts, onUnauthorized } = setup([fail(new ApiError(401, "invalid_token", "no"))]);
+    await expect(runCommand(opts)).rejects.toThrow();
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("isRetryable", () => {
-  it("is true for a network error or a 5xx", () => {
-    expect(isRetryable(new ApiError(0, "network_error", "x"))).toBe(true);
-    expect(isRetryable(new ApiError(503, "unavailable", "x"))).toBe(true);
-    expect(isRetryable(new ApiError(409, "seq_conflict", "x"))).toBe(false);
-    expect(isRetryable(new Error("plain"))).toBe(false);
+describe("errors", () => {
+  it("classifies retryable failures", () => {
+    expect(isRetryable(new ApiError(0, "network_error", ""))).toBe(true);
+    expect(isRetryable(new ApiError(503, "printer_unavailable", ""))).toBe(true);
+    expect(isRetryable(new ApiError(422, "invalid_request", ""))).toBe(false);
+    expect(isRetryable(new Error("boom"))).toBe(false);
+  });
+
+  it("explains known codes and passes the server's words through otherwise", () => {
+    expect(friendlyError(new ApiError(503, "printer_unavailable", "x"))).toMatch(/printer/);
+    expect(friendlyError(new ApiError(422, "amount_exceeds_balance", "more than owing"))).toBe(
+      "more than owing",
+    );
   });
 });
