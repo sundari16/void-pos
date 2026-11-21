@@ -7,6 +7,12 @@
 // on any public Maven repository, so a release build fails resolving it for lint
 // (lintVitalAnalyzeRelease). The till never provisions cards into a wallet, so nothing needs
 // it: excluding it everywhere leaves the APK exactly as it would be, and lint runs in full.
+//
+// Its partner is the R8 rule in app.json (expo-build-properties → android.extraProguardRules):
+// `-dontwarn com.stripe.android.pushProvisioning.**`. stripe-react-native's push-provisioning
+// proxy references that SDK's classes, which a compileOnly dependency leaves out of the
+// release build; Stripe's own consumer rules silence Tap and Pay but not these. Minification
+// stays on.
 
 const { withProjectBuildGradle } = require("expo/config-plugins");
 

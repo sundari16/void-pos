@@ -42,7 +42,8 @@
         "expo-build-properties",
         {
           "android": {
-            "usesCleartextTraffic": true
+            "usesCleartextTraffic": true,
+            "extraProguardRules": "-dontwarn com.stripe.android.pushProvisioning.**"
           }
         }
       ],
