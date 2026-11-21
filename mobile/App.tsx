@@ -1,7 +1,8 @@
 // The Void POS mobile till. Pair the device, then ring up orders (menu → ticket → place →
-// send to kitchen → pay) and read the shift closeout. Mirrors the web till's flows and the
-// backend's API contracts (see src/void_pos/api); money is integer cents, formatted to AUD
-// for display only.
+// send to kitchen → pay, plus discounts, voids, refunds and open orders) and read the shift
+// closeout. Mirrors the web till's flows and the backend's API contracts (see
+// src/void_pos/api); keeps working offline through the on-device outbox (src/offline). Money
+// is integer cents, formatted to AUD for display only.
 
 import { StatusBar } from "expo-status-bar";
 import { useState } from "react";
@@ -14,17 +15,21 @@ import {
   Text,
   View,
 } from "react-native";
+import { SyncProvider, useSync } from "./src/SyncContext";
 import { TillProvider, useTill } from "./src/TillContext";
 import { CloseoutScreen } from "./src/screens/CloseoutScreen";
 import { OrderWorkspace } from "./src/screens/OrderWorkspace";
 import { PairScreen } from "./src/screens/PairScreen";
+import { SyncBadge } from "./src/screens/SyncStatus";
 import { theme } from "./src/theme";
 
 export default function App() {
   return (
     <TillProvider>
-      <StatusBar style="dark" />
-      <Root />
+      <SyncProvider>
+        <StatusBar style="dark" />
+        <Root />
+      </SyncProvider>
     </TillProvider>
   );
 }
@@ -50,10 +55,15 @@ function Root() {
 
 function Main() {
   const { till, unpair } = useTill();
+  const { queued } = useSync();
   const [tab, setTab] = useState<"order" | "closeout">("order");
 
   function confirmUnpair() {
-    Alert.alert("Unpair this till?", "You'll need a new pairing code from the venue admin to use it again.", [
+    const waiting =
+      queued > 0
+        ? ` ${queued} change${queued === 1 ? "" : "s"} taken offline haven't reached the server yet; they stay on this device and go once it is paired again as the same till.`
+        : "";
+    Alert.alert("Unpair this till?", `You'll need a new pairing code from the venue admin to use it again.${waiting}`, [
       { text: "Cancel", style: "cancel" },
       { text: "Unpair", style: "destructive", onPress: () => unpair() },
     ]);
@@ -70,9 +80,12 @@ function Main() {
             {till?.deviceName}
           </Text>
         </View>
-        <Pressable onPress={confirmUnpair} hitSlop={8} accessibilityRole="button">
-          <Text style={styles.unpair}>Unpair</Text>
-        </Pressable>
+        <View style={styles.actions}>
+          <SyncBadge />
+          <Pressable onPress={confirmUnpair} hitSlop={8} accessibilityRole="button">
+            <Text style={styles.unpair}>Unpair</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.tabs}>
@@ -114,6 +127,7 @@ const styles = StyleSheet.create({
   venue: { fontSize: 16, fontWeight: "700", color: theme.colors.text },
   device: { fontSize: 12, color: theme.colors.muted },
   unpair: { fontSize: 14, color: theme.colors.danger, fontWeight: "600" },
+  actions: { flexDirection: "row", alignItems: "center", gap: theme.space(3) },
   tabs: {
     flexDirection: "row",
     backgroundColor: theme.colors.surface,

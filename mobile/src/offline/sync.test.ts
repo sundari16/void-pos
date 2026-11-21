@@ -16,7 +16,7 @@ function fakeServer() {
   const server = {
     log,
     calls,
-    pushAck: (event: SyncEvent): Partial<SyncAck> | Error | null => (log.some((e) => e.event_id === event.event_id) ? { status: "duplicate" } : null),
+    pushAck: (event: SyncEvent): Partial<SyncAck> | Error | null => log.some((e) => e.event_id === event.event_id) ? { status: "duplicate", detail: "event already in the log" } : null,
     kitchen: (orderId: string, body: CommandIn): unknown => {
       void orderId;
       void body;
@@ -144,7 +144,25 @@ describe("the till's outbox", () => {
     server.kitchen = () => null;
     const report = await sync.drain();
     expect([report.done, report.failed]).toEqual([3, 0]);
+    expect(report.notices.filter((n) => n.kind !== "info")).toEqual([]);
     expect(server.log.filter((e) => e.type === "order.paid")).toHaveLength(1);
+  });
+
+  it("flags a payment taken offline on an order another till had already settled", async () => {
+    const { sync, server } = setup();
+    await queueOrder(sync, "O1", 1);
+    server.pushAck = (e) =>
+      e.type === "order.paid" ? { status: "duplicate", detail: "already paid" } : null;
+    const report = await sync.drain();
+    expect(report.notices.map((n) => n.kind)).toContain("warn");
+    expect(report.notices.find((n) => n.kind === "warn")?.text).toMatch(/already paid on another till/);
+
+    // A plain retry of the same event stays quiet.
+    const again = setup();
+    await queueOrder(again.sync, "O1", 1);
+    again.server.pushAck = (e) =>
+      e.type === "order.paid" ? { status: "duplicate", detail: "event already in the log" } : null;
+    expect((await again.sync.drain()).notices.filter((n) => n.kind === "warn")).toEqual([]);
   });
 
   it("holds back an order's changes when the server refuses its placement", async () => {

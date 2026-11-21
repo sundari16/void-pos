@@ -3,7 +3,7 @@ import { ApiError } from "./api";
 import { friendlyError, isRetryable, runCommand, type Pending } from "./commands";
 import type { CommandIn } from "./types";
 
-function setup(responses: Array<() => unknown>) {
+function setup(responses: (() => unknown)[]) {
   const pending: Pending<CommandIn> = { current: null };
   let built = 0;
   const sent: CommandIn[] = [];

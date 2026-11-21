@@ -48,6 +48,22 @@ export function dayBefore(date: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+let lastOccurred = 0;
+
+/** Now, but never at or before the till's last event: the server applies a pushed batch in
+ *  (occurred_at, event_id) order, so a clock stepping back (an NTP correction mid-shift)
+ *  must not put a payment ahead of the items it pays for. */
+export function occurredNow(now: number = Date.now()): string {
+  lastOccurred = Math.max(now, lastOccurred + 1);
+  return new Date(lastOccurred).toISOString();
+}
+
+/** Carry the event clock on from events already queued (after a restart). */
+export function seedOccurred(iso: string): void {
+  const t = Date.parse(iso);
+  if (!Number.isNaN(t)) lastOccurred = Math.max(lastOccurred, t);
+}
+
 export function needsServer(what: string): ApiError {
   return new ApiError(0, "needs_server", `${what} needs the server; try again once the till is back online.`);
 }
@@ -69,7 +85,7 @@ function event(
     seq: cmd.seq,
     location_id: till.locationId,
     business_date: date,
-    occurred_at: cmd.occurred_at ?? new Date().toISOString(),
+    occurred_at: cmd.occurred_at ?? occurredNow(),
     type,
     payload,
   };

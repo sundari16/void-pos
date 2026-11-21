@@ -2,7 +2,8 @@
 // rules compare against. Mirrors the web till's menu loading (web/src/app/page.tsx).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "./lib/api";
+import { ApiError } from "./lib/api";
+import { api } from "./net";
 import { friendlyError } from "./lib/commands";
 import { localClock } from "./lib/menu";
 import type { TillMenu } from "./lib/types";

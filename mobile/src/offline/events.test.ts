@@ -5,10 +5,12 @@ import {
   businessDate,
   dayBefore,
   kitchenEvent,
+  occurredNow,
   payEvent,
   placeEvent,
   removeAdjustmentEvent,
   removeLinesEvent,
+  seedOccurred,
 } from "./events";
 import { applyEvent } from "./projection";
 import { cmd, dosa, ghee, placeBody, placed, TILL } from "./testkit";
@@ -71,6 +73,16 @@ describe("till commands as sync events", () => {
     const event = placeEvent(TILL, body);
     expect(event.business_date).toBe(businessDate(TILL.timezone));
     expect(event.occurred_at).toMatch(/Z$/);
+  });
+
+  it("never stamps an event before the till's last one, whatever the clock does", () => {
+    const first = occurredNow(Date.parse("2026-11-21T03:00:00.000Z"));
+    const stepBack = occurredNow(Date.parse("2026-11-21T02:59:00.000Z"));
+    expect(stepBack > first).toBe(true);
+    seedOccurred("2026-11-21T04:00:00.000Z");
+    expect(occurredNow(Date.parse("2026-11-21T03:30:00.000Z"))).toBe("2026-11-21T04:00:00.001Z");
+    seedOccurred("not a date");
+    expect(occurredNow(Date.parse("2026-11-21T05:00:00.000Z"))).toBe("2026-11-21T05:00:00.000Z");
   });
 
   it("works out business dates", () => {

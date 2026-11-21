@@ -14,7 +14,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, ApiError } from "./lib/api";
+import { ApiError } from "./lib/api";
 import { clearTill, loadTill, saveTill } from "./lib/storage";
 import {
   refreshTill,
@@ -26,6 +26,8 @@ import {
 } from "./lib/till";
 import type { CommandIn } from "./lib/types";
 import { ulid } from "./lib/ulid";
+import { api } from "./net";
+import { loadServer } from "./server";
 
 export const REVOKED_NOTICE = "This till's pairing was revoked or replaced. Pair it again.";
 
@@ -45,6 +47,10 @@ interface TillContextValue {
   seqAfter: (lastSeq: number) => number;
   /** Resync after order_number_used and return a fresh order number. */
   orderNumberAfter: (next: number) => number;
+  /** Move the counters past what the outbox already holds (never back). */
+  catchUp: (lastSeq: number, nextOrderNumber: number) => void;
+  /** The till as it is right now (state can lag a render behind). */
+  peek: () => Till | null;
 }
 
 const TillContext = createContext<TillContextValue | null>(null);
@@ -73,6 +79,7 @@ export function TillProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     void (async () => {
+      await loadServer();
       const saved = await loadTill();
       if (!active) return;
       current.current = saved;
@@ -129,6 +136,13 @@ export function TillProvider({ children }: { children: ReactNode }) {
         commit(next);
         return number;
       },
+      catchUp(lastSeq, nextOrderNumber) {
+        const now = current.current;
+        if (!now) return;
+        const next = resyncOrderNumber(resyncSeq(now, lastSeq), nextOrderNumber);
+        if (next.nextSeq !== now.nextSeq || next.nextOrderNumber !== now.nextOrderNumber) commit(next);
+      },
+      peek: () => current.current,
     };
   }, [till, ready, notice, commit, unpair]);
 

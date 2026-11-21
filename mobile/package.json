@@ -17,6 +17,7 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "@stripe/stripe-react-native": "0.81.0",
     "expo": "~58.0.26",
+    "expo-build-properties": "~58.0.12",
     "expo-sqlite": "~58.0.18",
     "expo-status-bar": "~58.0.5",
     "react": "19.3.0",
@@ -34,6 +35,9 @@
   },
   "jest": {
     "preset": "jest-expo",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "setupFiles": [
+      "./jest.setup.js"
+    ]
   }
 }

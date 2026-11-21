@@ -76,6 +76,9 @@ export interface PullReport {
 }
 
 const DONE = new Set(["applied", "duplicate", "ignored", "conflict"]);
+/** The server's word for an event it already had (a retry), as opposed to one that changed
+ *  nothing because the order had moved on (src/void_pos/events/apply.py). */
+const REPLAY = "event already in the log";
 
 export function isNetworkError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 0 && err.code === "network_error";
@@ -238,6 +241,13 @@ export class TillSync {
             report.notices.push({
               kind: "warn",
               text: `${await this.label(entryOrderId(entry))}: ${ack.detail ?? ack.status} (changed on another till)`,
+            });
+          } else if (ack.status === "duplicate" && entry.event.type === "order.paid" && ack.detail !== REPLAY) {
+            // Not a retry: the order was settled elsewhere first, and the server still kept
+            // this payment (money moved), so the customer may have paid twice.
+            report.notices.push({
+              kind: "warn",
+              text: `${await this.label(entryOrderId(entry))} was already paid on another till; this payment was still recorded. Check it and refund if it was paid twice.`,
             });
           }
         } else if (ack.code === "seq_conflict" && attempt === 0) {
