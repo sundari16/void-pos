@@ -1,57 +1,84 @@
-import type { ChosenModifier } from "./menu";
-import { draftItemFrom, itemSubtotalCents, orderTotalCents, toLineIns } from "./order";
-import type { MenuItem, Modifier } from "./types";
+// Generated from web/src/lib/order.test.ts by mobile/scripts/sync-lib.mjs — edit the web copy.
+import { formatCents, formatDelta } from "./money";
+import { draftItemFrom, orderTotalCents, toLineIns } from "./order";
+import type { MenuItem } from "./types";
+import { ULID_PATTERN } from "./ulid";
 
-function menuItem(overrides: Partial<MenuItem> = {}): MenuItem {
-  return {
-    id: "item1",
-    location_id: "loc",
-    name: "Naan",
+const dosa: MenuItem = {
+  id: "01JITEM0000000000000000000",
+  location_id: "01JLOCATION000000000000000",
+  name: "Masala Dosa",
+  kitchen_name: "மசாலா தோசை",
+  category: "Mains",
+  base_price_cents: 1850,
+  tax_rate: 0.1,
+  is_available: true,
+  available_from: null,
+  available_to: null,
+};
+
+const extraCheese = {
+  modifier: {
+    id: "01JMODIFIER000000000000000",
+    group_id: "01JGROUP000000000000000000",
+    name: "Extra cheese",
     kitchen_name: null,
-    category: "Breads",
-    base_price_cents: 350,
-    tax_rate: 0.1,
-    is_available: true,
-    available_from: null,
-    available_to: null,
-    ...overrides,
-  };
-}
+    price_delta_cents: 150,
+  },
+  quantity: 1,
+};
 
-function modifier(id: string, delta: number): Modifier {
-  return { id, group_id: "g", name: id, kitchen_name: null, price_delta_cents: delta };
-}
+describe("draft orders", () => {
+  it("become item lines followed by modifier child lines with ULID ids", () => {
+    const item = draftItemFrom(dosa, 2, [extraCheese]);
+    const [itemLine, modLine] = toLineIns([item]);
 
-describe("draft order", () => {
-  const chosen: ChosenModifier[] = [{ modifier: modifier("butter", 150), quantity: 1 }];
-
-  it("prices an item with its modifiers, per unit of the item", () => {
-    const draft = draftItemFrom(menuItem(), 2, chosen);
-    // (base 350 + butter 150) * 2
-    expect(itemSubtotalCents(draft)).toBe(1000);
-    expect(orderTotalCents([draft])).toBe(1000);
+    expect(itemLine.id).toMatch(ULID_PATTERN);
+    expect(itemLine).toMatchObject({
+      menu_item_id: dosa.id,
+      quantity: 2,
+      unit_price_cents: 1850,
+      kitchen_name_snapshot: "மசாலா தோசை",
+      category_snapshot: "Mains",
+    });
+    expect(modLine).toMatchObject({
+      parent_line_id: itemLine.id,
+      modifier_id: extraCheese.modifier.id,
+      quantity: 1,
+      unit_price_cents: 150,
+      tax_rate_snapshot: 0.1,
+      category_snapshot: "Mains",
+    });
+    expect(modLine.id).not.toBe(itemLine.id);
+    expect(itemLine.id < modLine.id).toBe(true); // sorts item first
   });
 
-  it("adds a kitchen note as a free, price-0 modifier line", () => {
-    const draft = draftItemFrom(menuItem(), 1, chosen, "extra crispy");
-    expect(draft.modifiers).toHaveLength(2);
-    const note = draft.modifiers[1];
-    expect(note.name).toBe("extra crispy");
-    expect(note.unitPriceCents).toBe(0);
-    expect(note.modifierId).toBeUndefined();
+  it("total like the server: modifiers are charged per unit of their item", () => {
+    expect(orderTotalCents([draftItemFrom(dosa, 2, [extraCheese])])).toBe(2 * (1850 + 150));
+
+    const item = draftItemFrom(dosa, 3, [{ ...extraCheese, quantity: 2 }]);
+    expect(orderTotalCents([item])).toBe(3 * (1850 + 2 * 150));
+    expect(toLineIns([item])[1].quantity).toBe(2);
   });
 
-  it("flattens to backend lines: item first, then its modifiers pointing at it", () => {
-    const draft = draftItemFrom(menuItem(), 2, chosen);
-    const lines = toLineIns([draft]);
-    expect(lines).toHaveLength(2);
-    expect(lines[0].menu_item_id).toBe("item1");
-    expect(lines[0].parent_line_id).toBeUndefined();
-    expect(lines[0].quantity).toBe(2);
-    expect(lines[1].parent_line_id).toBe(lines[0].id);
-    expect(lines[1].modifier_id).toBe("butter");
-    expect(lines[1].unit_price_cents).toBe(150);
-    // A modifier is taxed like its item.
-    expect(lines[1].tax_rate_snapshot).toBe(0.1);
+  it("send a kitchen note as a free-text modifier line", () => {
+    const item = draftItemFrom(dosa, 1, [], "  nut allergy  ");
+    const [, note] = toLineIns([item]);
+    expect(note).toMatchObject({
+      parent_line_id: item.ref,
+      modifier_id: null,
+      name_snapshot: "nut allergy",
+      unit_price_cents: 0,
+    });
+    expect(toLineIns([draftItemFrom(dosa, 1, [], "   ")])).toHaveLength(1);
+  });
+});
+
+describe("money", () => {
+  it("formats cents for display only", () => {
+    expect(formatCents(1850)).toBe("$18.50");
+    expect(formatDelta(150)).toBe("+$1.50");
+    expect(formatDelta(-50)).toBe("-$0.50");
+    expect(formatDelta(0)).toBe("");
   });
 });

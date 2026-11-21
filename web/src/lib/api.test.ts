@@ -40,6 +40,20 @@ describe("api client", () => {
     expect([err.status, err.code]).toEqual([502, "http_502"]);
   });
 
+  it("pushes and pulls the device sync log", async () => {
+    const { impl, calls } = fakeFetch(() => json(200, { acks: [], events: [], has_more: false }));
+    const api = createApi(impl, () => "http://pos.local:8000");
+    await api.syncPull("tok", null);
+    await api.syncPull("tok", "42", 100);
+    await api.syncPush("tok", []);
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://pos.local:8000/sync/pull?limit=500",
+      "http://pos.local:8000/sync/pull?cursor=42&limit=100",
+      "http://pos.local:8000/sync/push",
+    ]);
+    expect(calls[2].init?.body).toBe(JSON.stringify({ events: [] }));
+  });
+
   it("reports an unreachable server as status 0", async () => {
     const api = createApi(async () => {
       throw new TypeError("Failed to fetch");

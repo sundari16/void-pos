@@ -311,6 +311,35 @@ export interface PairResponse extends DeviceSession {
   token: string;
 }
 
+/** One event in the device sync log (POST /sync/push, GET /sync/pull). */
+export interface SyncEvent {
+  event_id: string;
+  device_id: string;
+  seq: number;
+  location_id: string;
+  /** "YYYY-MM-DD" in the location's timezone. */
+  business_date: string;
+  /** ISO 8601 with a timezone. */
+  occurred_at: string;
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+/** What the server did with one pushed event. */
+export interface SyncAck {
+  event_id: string;
+  status: "applied" | "duplicate" | "conflict" | "ignored" | "rejected";
+  detail: string | null;
+  /** Set on rejected: seq_conflict, order_number_used, invalid_payload, ... */
+  code: string | null;
+}
+
+export interface PullResponse {
+  events: SyncEvent[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
 export interface Closeout {
   location_id: string;
   business_date: string;

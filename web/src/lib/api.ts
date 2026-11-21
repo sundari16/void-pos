@@ -17,11 +17,14 @@ import type {
   PayRequest,
   PaymentResponse,
   PlaceOrderRequest,
+  PullResponse,
   ReceiptOut,
   RefundRequest,
   RemoveLinesRequest,
   StripeConfigOut,
   StripeIntentOut,
+  SyncAck,
+  SyncEvent,
   TillMenu,
   VoidRequest,
   VoidResponse,
@@ -166,6 +169,17 @@ export function createApi(fetchImpl: Fetch = (input, init) => fetch(input, init)
       return request(`/reports/${locationId}/closeout`, {
         token,
         query: { business_date: businessDate },
+      });
+    },
+    /** Send this till's queued events; idempotent by event id. One ack per event. */
+    syncPush(token: string, events: SyncEvent[]): Promise<{ acks: SyncAck[] }> {
+      return request("/sync/push", { method: "POST", token, body: { events } });
+    },
+    /** Other tills' events at this location after `cursor`, in commit order. */
+    syncPull(token: string, cursor: string | null, limit = 500): Promise<PullResponse> {
+      return request("/sync/pull", {
+        token,
+        query: { cursor: cursor ?? undefined, limit: String(limit) },
       });
     },
   };
