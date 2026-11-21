@@ -76,13 +76,14 @@ describe("till commands as sync events", () => {
   });
 
   it("never stamps an event before the till's last one, whatever the clock does", () => {
-    const first = occurredNow(Date.parse("2026-11-21T03:00:00.000Z"));
-    const stepBack = occurredNow(Date.parse("2026-11-21T02:59:00.000Z"));
+    // Far-future times, so the real clock (other tests stamp events "now") never overtakes them.
+    const first = occurredNow(Date.parse("2100-01-01T03:00:00.000Z"));
+    const stepBack = occurredNow(Date.parse("2100-01-01T02:59:00.000Z"));
     expect(stepBack > first).toBe(true);
-    seedOccurred("2026-11-21T04:00:00.000Z");
-    expect(occurredNow(Date.parse("2026-11-21T03:30:00.000Z"))).toBe("2026-11-21T04:00:00.001Z");
+    seedOccurred("2100-01-01T04:00:00.000Z");
+    expect(occurredNow(Date.parse("2100-01-01T03:30:00.000Z"))).toBe("2100-01-01T04:00:00.001Z");
     seedOccurred("not a date");
-    expect(occurredNow(Date.parse("2026-11-21T05:00:00.000Z"))).toBe("2026-11-21T05:00:00.000Z");
+    expect(occurredNow(Date.parse("2100-01-01T05:00:00.000Z"))).toBe("2100-01-01T05:00:00.000Z");
   });
 
   it("works out business dates", () => {
